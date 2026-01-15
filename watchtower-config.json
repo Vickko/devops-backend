@@ -1,0 +1,13 @@
+{
+  "notifications": [
+    {
+      "type": "shoutrrr",
+      "url": "generic://your-webhook-url",
+      "levels": ["info", "warn", "error"]
+    }
+  ],
+  "log_format": "json",
+  "include_stopped": true,
+  "revive_stopped": false,
+  "enable_label": true
+}

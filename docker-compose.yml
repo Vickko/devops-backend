@@ -1,0 +1,100 @@
+version: '3.8'
+
+services:
+  # DevOps Backend Service
+  devops-backend:
+    image: ghcr.io/${GITHUB_USERNAME}/devops-backend:latest
+    container_name: devops-backend
+    restart: unless-stopped
+    ports:
+      - "52538:52538"
+    volumes:
+      # Persist database
+      - ./data:/app/data
+      # Mount production config
+      - ./configs/config.prod.yaml:/app/configs/config.yaml:ro
+    environment:
+      - CONFIG_PATH=/app/configs/config.yaml
+      - DB_PATH=/app/data/sessions.db
+      - PORT=52538
+      - LOG_LEVEL=info
+      - TZ=Asia/Shanghai
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:52538/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - devops-network
+    labels:
+      # Watchtower will monitor this container
+      - "com.centurylinklabs.watchtower.enable=true"
+      # Application metadata
+      - "app.name=devops-backend"
+      - "app.version=1.0.0"
+
+  # Watchtower - Auto-update containers
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: watchtower
+    restart: unless-stopped
+    volumes:
+      # Docker socket to manage containers
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Optional: Config file for notifications
+      - ./watchtower-config.json:/config.json:ro
+    environment:
+      # Check for updates every 5 minutes
+      - WATCHTOWER_POLL_INTERVAL=300
+      # Only update containers with the label
+      - WATCHTOWER_LABEL_ENABLE=true
+      # Cleanup old images after update
+      - WATCHTOWER_CLEANUP=true
+      # Include stopped containers
+      - WATCHTOWER_INCLUDE_STOPPED=true
+      # Rolling restart (one at a time)
+      - WATCHTOWER_ROLLING_RESTART=true
+      # Log level
+      - WATCHTOWER_LOG_LEVEL=info
+      # Notification settings (optional)
+      - WATCHTOWER_NOTIFICATIONS=shoutrrr
+      - WATCHTOWER_NOTIFICATION_URL=${NOTIFICATION_URL:-}
+      # Time zone
+      - TZ=Asia/Shanghai
+      # Debug mode (set to true for troubleshooting)
+      - WATCHTOWER_DEBUG=false
+      # Schedule updates at specific time (optional, cron format)
+      # - WATCHTOWER_SCHEDULE=0 0 2 * * *  # 2 AM daily
+    networks:
+      - devops-network
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  # Optional: Reverse Proxy (Nginx)
+  nginx:
+    image: nginx:alpine
+    container_name: nginx-proxy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - devops-backend
+    networks:
+      - devops-network
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+    profiles:
+      - with-nginx
+
+networks:
+  devops-network:
+    driver: bridge
+
+volumes:
+  devops-data:
+    driver: local

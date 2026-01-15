@@ -42,3 +42,15 @@ data/*.db-wal
 # Logs
 *.log
 logs/
+
+# Production configs (use templates instead)
+configs/config.prod.yaml
+configs/*.local.yaml
+
+# Deployment artifacts
+backups/
+nginx/ssl/
+*.tar.gz
+
+# Scripts output
+scripts/*.log
