@@ -1,12 +1,12 @@
 # =============================================================================
 # Multi-stage Dockerfile for devops-backend
-# Go 1.23+ | Port 52538 | SQLite Database | OIDC Support
+# Go 1.24+ | Port 52538 | SQLite Database | OIDC Support
 # =============================================================================
 
 # -----------------------------------------------------------------------------
 # Stage 1: Builder - Build the Go application
 # -----------------------------------------------------------------------------
-FROM golang:1.23-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
 # Install build dependencies
 # - git: Required for go mod download with replace directives

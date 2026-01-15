@@ -1,13 +1,13 @@
 module devops-backend
 
-go 1.23
+go 1.24.0
 
 require (
 	github.com/cloudwego/eino v0.7.13
 	github.com/cloudwego/eino-ext/components/model/ark v0.1.55
 	github.com/cloudwego/eino-ext/components/model/arkbot v0.1.1
 	github.com/cloudwego/eino-ext/components/model/claude v0.1.13
-	github.com/cloudwego/eino-ext/components/model/deepseek v0.1.0
+	github.com/cloudwego/eino-ext/components/model/deepseek v0.1.2
 	github.com/cloudwego/eino-ext/components/model/gemini v0.1.25
 	github.com/cloudwego/eino-ext/components/model/ollama v0.1.6
 	github.com/cloudwego/eino-ext/components/model/openai v0.1.6
@@ -49,8 +49,8 @@ require (
 	github.com/baidubce/bce-sdk-go v0.9.164 // indirect
 	github.com/buger/jsonparser v1.1.1 // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
-	github.com/bytedance/sonic v1.14.1 // indirect
-	github.com/bytedance/sonic/loader v0.3.0 // indirect
+	github.com/bytedance/sonic v1.14.2 // indirect
+	github.com/bytedance/sonic/loader v0.4.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/cloudwego/eino-ext/libs/acl/openai v0.1.10 // indirect
 	github.com/cohesion-org/deepseek-go v1.3.2 // indirect
