@@ -9,6 +9,7 @@ import (
 type HealthResponse struct {
 	Status    string `json:"status"`
 	Timestamp int64  `json:"timestamp"`
+	Version   string `json:"version"`
 }
 
 func HealthCheckHandler(w http.ResponseWriter, r *http.Request) {
@@ -17,5 +18,6 @@ func HealthCheckHandler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(HealthResponse{
 		Status:    "healthy",
 		Timestamp: time.Now().Unix(),
+		Version:   "v1.0.0-cicd-test",
 	})
 }
