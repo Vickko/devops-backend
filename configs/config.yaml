@@ -1,0 +1,78 @@
+# Server configuration
+server:
+  base_url: "http://localhost:52538"  # Only configure the base URL that changes per environment
+
+eino:
+  default_model: "gpt-4o-mini"
+  clients:
+    openai:
+      base_url: "https://aihubmix.com/v1"
+      api_key: "sk-6kgtZQDkmZDQMfCo28C360320cEf45FaAf1577Ef08F4032b"
+    claude:
+      base_url: "https://aihubmix.com/"
+      api_key: "sk-6kgtZQDkmZDQMfCo28C360320cEf45FaAf1577Ef08F4032b"
+    ark:
+      base_url: "https://aihubmix.com/v1"
+      api_key: "sk-6kgtZQDkmZDQMfCo28C360320cEf45FaAf1577Ef08F4032b"
+    arkbot:
+      base_url: "https://aihubmix.com/v1"
+      api_key: "sk-6kgtZQDkmZDQMfCo28C360320cEf45FaAf1577Ef08F4032b"
+    deepseek:
+      base_url: "https://aihubmix.com/v1"
+      api_key: "sk-6kgtZQDkmZDQMfCo28C360320cEf45FaAf1577Ef08F4032b"
+    gemini:
+      # gemini 原生格式端点（支持图像生成）
+      base_url: "https://aihubmix.com/gemini"
+      api_key: "sk-6kgtZQDkmZDQMfCo28C360320cEf45FaAf1577Ef08F4032b"
+    ollama:
+      base_url: "http://localhost:11434"
+      api_key: ""
+    openrouter:
+      base_url: "https://aihubmix.com/v1"
+      api_key: "sk-6kgtZQDkmZDQMfCo28C360320cEf45FaAf1577Ef08F4032b"
+    qianfan:
+      # qianfan api_key 格式：access_key:secret_key，也可用环境变量 QIANFAN_ACCESS_KEY 和 QIANFAN_SECRET_KEY
+      base_url: "https://aihubmix.com/v1"
+      api_key: "sk-6kgtZQDkmZDQMfCo28C360320cEf45FaAf1577Ef08F4032b"
+    qwen:
+      base_url: "https://aihubmix.com/v1"
+      api_key: "sk-6kgtZQDkmZDQMfCo28C360320cEf45FaAf1577Ef08F4032b"
+    grok:
+      base_url: "https://aihubmix.com/v1"
+      api_key: "sk-6kgtZQDkmZDQMfCo28C360320cEf45FaAf1577Ef08F4032b"
+    glm:
+      base_url: "https://aihubmix.com/v1"
+      api_key: "sk-6kgtZQDkmZDQMfCo28C360320cEf45FaAf1577Ef08F4032b"
+    kimi:
+      base_url: "https://aihubmix.com/v1"
+      api_key: "sk-6kgtZQDkmZDQMfCo28C360320cEf45FaAf1577Ef08F4032b"
+    minimax:
+      base_url: "https://aihubmix.com/v1"
+      api_key: "sk-6kgtZQDkmZDQMfCo28C360320cEf45FaAf1577Ef08F4032b"
+
+# Authentication configuration
+auth:
+  enabled: true  # ✅ OIDC enabled with PKCE
+
+  # Zitadel Configuration (PKCE mode)
+  provider: "http://localhost:8080"
+  client_id: "355046916238671875"
+  client_secret: ""  # PKCE mode - no secret needed
+  # redirect_url is auto-constructed: server.base_url + "/api/auth/callback"
+  # Override only if you need a different callback path (not recommended)
+  frontend_url: "http://localhost:5173"  # Frontend URL for post-login redirect
+  scopes:
+    - "openid"
+    - "profile"
+    - "email"
+    - "urn:zitadel:iam:org:project:id:zitadel:aud"
+
+  # Alternative: Generic OIDC (Keycloak, Auth0, etc.)
+  # provider: "http://localhost:8080/realms/your-realm"  # For Keycloak
+  # client_id: "devops-backend"
+  # client_secret: "your-client-secret"
+  # redirect_url: "http://localhost:52538/api/auth/callback"
+  # scopes:
+  #   - "openid"
+  #   - "profile"
+  #   - "email"

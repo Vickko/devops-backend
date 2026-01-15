@@ -1,0 +1,93 @@
+# =============================================================================
+# .dockerignore - Exclude unnecessary files from Docker build context
+# =============================================================================
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# IDE and Editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*.swn
+*~
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+server
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Dependencies (will be downloaded in container)
+vendor/
+
+# Documentation
+README.md
+*.md
+docs/
+LICENSE
+
+# Test files
+*_test.go
+testdata/
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+Jenkinsfile
+
+# Database files (will be created at runtime)
+data/*.db
+data/*.db-shm
+data/*.db-wal
+*.db
+*.db-journal
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# Environment files (sensitive data)
+.env
+.env.local
+.env.*.local
+.envrc
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.cache
+
+# Coverage reports
+coverage.*
+*.cover
+*.coverage
+
+# Go workspace
+go.work
+go.work.sum
+
+# Docker files (no need to copy into image)
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Scripts (add selectively if needed)
+scripts/
+
+# Configuration overrides (use volume mounts instead)
+configs/config.local.yaml
+configs/config.dev.yaml
+configs/*.local.yaml

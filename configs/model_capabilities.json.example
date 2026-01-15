@@ -1,0 +1,18 @@
+{
+  "example-text-only-model": {
+    "supported_modalities": {
+      "text": true,
+      "image": false,
+      "audio": false,
+      "video": false
+    }
+  },
+  "example-text-and-image-model": {
+    "supported_modalities": {
+      "text": true,
+      "image": true,
+      "audio": false,
+      "video": false
+    }
+  }
+}
