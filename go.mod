@@ -1,6 +1,6 @@
 module devops-backend
 
-go 1.24.0
+go 1.25
 
 require (
 	github.com/cloudwego/eino v0.7.13
