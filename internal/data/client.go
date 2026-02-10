@@ -8,7 +8,7 @@ import (
 	"devops-backend/internal/biz"
 	"devops-backend/internal/conf"
 	"devops-backend/internal/data/adapter"
-	openairesponse "devops-backend/internal/data/model/openai-response"
+	openairesponse "github.com/Vickko/eino-openai-response"
 
 	"github.com/cloudwego/eino-ext/components/model/ark"
 	"github.com/cloudwego/eino-ext/components/model/arkbot"

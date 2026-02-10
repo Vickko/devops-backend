@@ -9,14 +9,14 @@ import (
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
-	openairesponse "devops-backend/internal/data/model/openai-response"
+	openairesponse "github.com/Vickko/eino-openai-response"
 )
 
 // OpenAIResponseAdapter OpenAI Responses API 模型适配器
 // 职责：
 // - 将 Thinking 参数转换为 Responses API 的 reasoning 配置
 // - reasoning.effort + reasoning.summary 配置
-// - 仅 reasoning 模型（o1/o3/gpt-5 系列）支持
+// - 仅 reasoning 模型（o1/o3/o4/gpt-5+ 系列）支持
 type OpenAIResponseAdapter struct {
 	raw       model.BaseChatModel
 	modelName string
@@ -76,11 +76,11 @@ func (a *OpenAIResponseAdapter) injectReasoningConfig(opts []model.Option) []mod
 }
 
 // supportsResponsesAPIReasoning 判断模型是否支持 Responses API 的 reasoning 参数
-// 仅 reasoning 模型支持：o1/o3 系列、gpt-5 系列
+// 仅 reasoning 模型支持：o1/o3/o4 系列、gpt-5+ 系列
 func supportsResponsesAPIReasoning(modelName string) bool {
 	m := strings.ToLower(modelName)
-	// o1, o3 系列
-	if strings.HasPrefix(m, "o1") || strings.HasPrefix(m, "o3") {
+	// o1, o3, o4 系列
+	if strings.HasPrefix(m, "o1") || strings.HasPrefix(m, "o3") || strings.HasPrefix(m, "o4") {
 		return true
 	}
 	// gpt-5 系列

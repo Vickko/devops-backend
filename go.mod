@@ -1,9 +1,10 @@
 module devops-backend
 
-go 1.25
+go 1.25.7
 
 require (
-	github.com/cloudwego/eino v0.7.13
+	github.com/Vickko/eino-openai-response v0.1.0
+	github.com/cloudwego/eino v0.7.32
 	github.com/cloudwego/eino-ext/components/model/ark v0.1.55
 	github.com/cloudwego/eino-ext/components/model/arkbot v0.1.1
 	github.com/cloudwego/eino-ext/components/model/claude v0.1.13
