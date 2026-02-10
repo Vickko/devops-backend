@@ -29,11 +29,20 @@ func NewAuthHandler(oidcClient *auth.OIDCClient, frontendURL string) *AuthHandle
 }
 
 // RegisterRoutes registers auth routes
-func (h *AuthHandler) RegisterRoutes(r *mux.Router) {
+func (h *AuthHandler) RegisterRoutes(r *mux.Router, authMiddleware func(http.Handler) http.Handler) {
 	r.HandleFunc("/auth/login", h.login).Methods(http.MethodGet)
 	r.HandleFunc("/auth/callback", h.callback).Methods(http.MethodGet)
 	r.HandleFunc("/auth/logout", h.logout).Methods(http.MethodPost)
-	r.HandleFunc("/auth/userinfo", h.userinfo).Methods(http.MethodGet)
+
+	// NOTE:
+	// The frontend calls /auth/userinfo to decide whether the user is logged in.
+	// This endpoint must run under the auth middleware so the user is put into request context.
+	// Otherwise it will always return 401 and cause a login redirect loop.
+	if authMiddleware != nil {
+		r.Handle("/auth/userinfo", authMiddleware(http.HandlerFunc(h.userinfo))).Methods(http.MethodGet)
+	} else {
+		r.HandleFunc("/auth/userinfo", h.userinfo).Methods(http.MethodGet)
+	}
 }
 
 // login initiates OIDC flow with PKCE

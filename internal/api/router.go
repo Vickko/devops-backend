@@ -15,7 +15,7 @@ func NewRouter(chatHandler *ChatHandler, authHandler *AuthHandler, authMiddlewar
 
 	// Public auth routes (no middleware)
 	if authHandler != nil {
-		authHandler.RegisterRoutes(r)
+		authHandler.RegisterRoutes(r, authMiddleware)
 	}
 
 	// Protected API routes
