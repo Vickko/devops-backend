@@ -80,6 +80,9 @@ jobs:
     needs: build-and-push
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
 
     steps:
       - name: Set lowercase image name
@@ -96,7 +99,7 @@ jobs:
           ignore-unfixed: true
 
       - name: Upload Trivy results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: 'trivy-results.sarif'
         continue-on-error: true
