@@ -32,20 +32,40 @@ func NewGeminiAdapter(raw model.BaseChatModel, modelName string) *GeminiAdapter 
 
 // Generate 调用原始模型的 Generate，注入 ThinkingConfig
 func (a *GeminiAdapter) Generate(ctx context.Context, messages []*schema.Message, opts ...model.Option) (*schema.Message, error) {
+	params := biz.GetParams(opts...)
 	opts = a.injectThinkingConfig(opts)
-	return a.raw.Generate(ctx, messages, opts...)
+	resp, err := a.raw.Generate(ctx, messages, opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	// Gemini 在部分模型上即使 IncludeThoughts=false 也可能返回 reasoning 字段。
+	// 用户关闭 Thinking 时，我们直接不展示这部分内容。
+	if params.Thinking != nil && !*params.Thinking {
+		resp.ReasoningContent = ""
+	}
+	return resp, nil
 }
 
 // Stream 流式调用，支持 fallback 到非流式模式
 func (a *GeminiAdapter) Stream(ctx context.Context, messages []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	params := biz.GetParams(opts...)
 	// 检查是否需要 fallback 到非流式模式
 	registry := message.GetModelCapabilityRegistry()
 	if registry.RequiresNonStreamingMode(a.modelName) {
-		return a.streamWithFallback(ctx, messages, opts...)
+		sr, err := a.streamWithFallback(ctx, messages, opts...)
+		if err != nil {
+			return nil, err
+		}
+		return wrapGeminiHideThinkingIfNeeded(sr, params), nil
 	}
 
 	opts = a.injectThinkingConfig(opts)
-	return a.raw.Stream(ctx, messages, opts...)
+	sr, err := a.raw.Stream(ctx, messages, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return wrapGeminiHideThinkingIfNeeded(sr, params), nil
 }
 
 // streamWithFallback 使用 Generate() 获取完整响应，然后模拟流式返回
@@ -62,9 +82,42 @@ func (a *GeminiAdapter) streamWithFallback(ctx context.Context, messages []*sche
 	return createSimulatedStreamReader(resp), nil
 }
 
+func wrapGeminiHideThinkingIfNeeded(sr *schema.StreamReader[*schema.Message], params *biz.RequestParams) *schema.StreamReader[*schema.Message] {
+	if params == nil || params.Thinking == nil || *params.Thinking {
+		return sr
+	}
+
+	return schema.StreamReaderWithConvert(sr, func(m *schema.Message) (*schema.Message, error) {
+		if m == nil || m.ReasoningContent == "" {
+			return m, nil
+		}
+		outCopy := *m
+		outCopy.ReasoningContent = ""
+		if outCopy.Content == "" && len(outCopy.AssistantGenMultiContent) == 0 {
+			return nil, schema.ErrNoValue
+		}
+		return &outCopy, nil
+	})
+}
+
 // injectThinkingConfig 根据 opts 中的 RequestParams 注入 Gemini ThinkingConfig
 func (a *GeminiAdapter) injectThinkingConfig(opts []model.Option) []model.Option {
 	params := biz.GetParams(opts...)
+
+	// 一些 Gemini 图像生成模型不支持 thinking level 配置（会直接报错）。
+	// 这类模型上只设置 IncludeThoughts / Budget，不设置 ThinkingLevel，保证：
+	// - Thinking=false 时不展示 thinking 内容
+	// - Thinking=true 时尽量展示（如果模型支持）
+	registry := message.GetModelCapabilityRegistry()
+	if registry.RequiresNonStreamingMode(a.modelName) {
+		includeThoughts := params.Thinking != nil && *params.Thinking
+		minBudget := int32(0) // 最低预算（不一定能完全关闭计算，但可以尽量减少/不输出）
+		return append(opts, gemini.WithThinkingConfig(&genai.ThinkingConfig{
+			IncludeThoughts: includeThoughts,
+			ThinkingBudget:  &minBudget,
+			// ThinkingLevel 留空（omitempty），避免部分模型报 “Thinking level is not supported”。
+		}))
+	}
 
 	var includeThoughts bool
 	var thinkingLevel genai.ThinkingLevel
@@ -75,7 +128,7 @@ func (a *GeminiAdapter) injectThinkingConfig(opts []model.Option) []model.Option
 		thinkingLevel = genai.ThinkingLevelHigh
 	} else {
 		includeThoughts = false
-		thinkingLevel = genai.ThinkingLevelLow
+		thinkingLevel = genai.ThinkingLevelMinimal
 	}
 
 	return append(opts, gemini.WithThinkingConfig(&genai.ThinkingConfig{
