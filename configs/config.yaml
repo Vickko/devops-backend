@@ -24,9 +24,6 @@ eino:
       # gemini 原生格式端点（支持图像生成）
       base_url: "https://aihubmix.com/gemini"
       api_key: "sk-6kgtZQDkmZDQMfCo28C360320cEf45FaAf1577Ef08F4032b"
-    ollama:
-      base_url: "http://localhost:11434"
-      api_key: ""
     openrouter:
       base_url: "https://aihubmix.com/v1"
       api_key: "sk-6kgtZQDkmZDQMfCo28C360320cEf45FaAf1577Ef08F4032b"

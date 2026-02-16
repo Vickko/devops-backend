@@ -81,8 +81,6 @@ github.com/cloudwego/eino-ext/components/model/deepseek v0.1.2 h1:PSHIDLUOv3ZCO7
 github.com/cloudwego/eino-ext/components/model/deepseek v0.1.2/go.mod h1:beCP+L7CsxDz4+DvBjo8iR/v/ZBPpmQfJtrqG280rjw=
 github.com/cloudwego/eino-ext/components/model/gemini v0.1.25 h1:gO9OdndlP9BSgecCK8UjikV5Xdl2tPivJ2Yq9teNwDI=
 github.com/cloudwego/eino-ext/components/model/gemini v0.1.25/go.mod h1:snXILkr06Zr2jm6WlqcWeytwiCramhNVPfxASgbjH40=
-github.com/cloudwego/eino-ext/components/model/ollama v0.1.6 h1:ZbrhV91uE0hGIOYXhb2i3G6tQJ/rK2SLYtoYrmocZXM=
-github.com/cloudwego/eino-ext/components/model/ollama v0.1.6/go.mod h1:GDXrvorGdRNV6g2mK5jdla2D8Xc/hh7XDrTeGDteLLo=
 github.com/cloudwego/eino-ext/components/model/openai v0.1.6 h1:gHPg0jbAx0WqZ6PoTGqNN1SQIOA6p7tkDrx82skTcIk=
 github.com/cloudwego/eino-ext/components/model/openai v0.1.6/go.mod h1:N03W8LHGL2Rk03RrNhR/x+vwv4YSkjj+gY9vgDZaanU=
 github.com/cloudwego/eino-ext/components/model/openrouter v0.1.0 h1:PZXBM3IhFRKeWsCv1AuV/LNsbR94hgUlI4ZU3lSIcKY=
@@ -106,8 +104,6 @@ github.com/dustin/go-humanize v1.0.1 h1:GzkhY7T5VNhEkwH0PVJgjz+fX1rhBrR7pRT3mDkp
 github.com/dustin/go-humanize v1.0.1/go.mod h1:Mu1zIs6XwVuF/gI1OepvI0qD18qycQx+mFykh5fBlto=
 github.com/eino-contrib/jsonschema v1.0.3 h1:2Kfsm1xlMV0ssY2nuxshS4AwbLFuqmPmzIjLVJ1Fsp0=
 github.com/eino-contrib/jsonschema v1.0.3/go.mod h1:cpnX4SyKjWjGC7iN2EbhxaTdLqGjCi0e9DxpLYxddD4=
-github.com/eino-contrib/ollama v0.1.0 h1:z1NaMdKW6X1ftP8g5xGGR5zDRPUtuTKFq35vBQgxsN4=
-github.com/eino-contrib/ollama v0.1.0/go.mod h1:mYsQ7b3DeqY8bHPuD3MZJYTqkgyL6LoemxoP/B7ZNhA=
 github.com/envoyproxy/go-control-plane v0.9.0/go.mod h1:YTl/9mNaCwkRvm6d1a2C3ymFceY/DCBVvsKhRF0iEA4=
 github.com/envoyproxy/go-control-plane v0.9.1-0.20191026205805-5f8ba28d4473/go.mod h1:YTl/9mNaCwkRvm6d1a2C3ymFceY/DCBVvsKhRF0iEA4=
 github.com/envoyproxy/go-control-plane v0.9.4/go.mod h1:6rpuAdCZL397s3pYoYcLgu1mIlRU8Am5FuJP05cCM98=

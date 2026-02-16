@@ -15,7 +15,6 @@ import (
 	"github.com/cloudwego/eino-ext/components/model/claude"
 	"github.com/cloudwego/eino-ext/components/model/deepseek"
 	"github.com/cloudwego/eino-ext/components/model/gemini"
-	"github.com/cloudwego/eino-ext/components/model/ollama"
 	"github.com/cloudwego/eino-ext/components/model/openai"
 	"github.com/cloudwego/eino-ext/components/model/openrouter"
 	"github.com/cloudwego/eino-ext/components/model/qianfan"
@@ -26,7 +25,8 @@ import (
 
 // 客户端关键词映射（硬编码）
 var clientKeywords = map[string][]string{
-	"openai":     {"gpt", "o1", "o3", "o4", "chatgpt"},
+	// 业务侧不使用本机 Ollama，因此带 llama 关键词的模型默认走远端 OpenAI 兼容接口（例如 aihubmix）。
+	"openai":     {"gpt", "o1", "o3", "o4", "chatgpt", "llama"},
 	"claude":     {"claude"},
 	"ark":        {"doubao", "ep-"},
 	"arkbot":     {"bot-"},
@@ -36,7 +36,6 @@ var clientKeywords = map[string][]string{
 	"glm":        {"glm"},
 	"kimi":       {"kimi"},
 	"minimax":    {"minimax"},
-	"ollama":     {"llama", "gemma", "phi", "mistral", "codellama", "vicuna"},
 	"openrouter": {"openrouter/"},
 	"qianfan":    {"ernie", "qianfan"},
 	"qwen":       {"qwen"},
@@ -208,12 +207,6 @@ func (f *ClientFactory) CreateChatModel(ctx context.Context, clientName, modelNa
 			return adapter.NewGeminiAdapter(raw, modelName), nil
 		}
 		return raw, nil
-
-	case "ollama":
-		return ollama.NewChatModel(ctx, &ollama.ChatModelConfig{
-			BaseURL: client.BaseURL,
-			Model:   modelName,
-		})
 
 	case "openrouter":
 		return openrouter.NewChatModel(ctx, &openrouter.Config{
