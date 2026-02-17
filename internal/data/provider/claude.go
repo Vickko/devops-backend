@@ -14,14 +14,14 @@ import (
 )
 
 // newClaudeRaw 创建原始 Claude client（忠实反映厂商默认行为）
-func newClaudeRaw(ctx context.Context, cfg conf.Client, modelName string, opts ...model.Option) (model.BaseChatModel, error) {
+func newClaudeRaw(ctx context.Context, cfg conf.Client, modelName string, opts ...model.Option) (model.ToolCallingChatModel, error) {
 	return claude.NewChatModel(ctx, &claude.Config{
 		BaseURL: &cfg.BaseURL, APIKey: cfg.APIKey, Model: modelName,
 	})
 }
 
 // newClaude 创建 Claude 模型 + thinking adapter
-func newClaude(ctx context.Context, cfg conf.Client, modelName string, opts ...model.Option) (model.BaseChatModel, error) {
+func newClaude(ctx context.Context, cfg conf.Client, modelName string, opts ...model.Option) (model.ToolCallingChatModel, error) {
 	raw, err := claude.NewChatModel(ctx, &claude.Config{
 		BaseURL: &cfg.BaseURL, APIKey: cfg.APIKey, Model: modelName, MaxTokens: 40000,
 	})
@@ -32,7 +32,7 @@ func newClaude(ctx context.Context, cfg conf.Client, modelName string, opts ...m
 }
 
 type claudeAdapter struct {
-	raw       model.BaseChatModel
+	raw       model.ToolCallingChatModel
 	modelName string
 }
 
@@ -53,6 +53,14 @@ func (a *claudeAdapter) Generate(ctx context.Context, messages []*schema.Message
 
 func (a *claudeAdapter) Stream(ctx context.Context, messages []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
 	return a.raw.Stream(ctx, messages, a.injectOpts(opts)...)
+}
+
+func (a *claudeAdapter) WithTools(tools []*schema.ToolInfo) (model.ToolCallingChatModel, error) {
+	m, err := a.raw.WithTools(tools)
+	if err != nil {
+		return nil, err
+	}
+	return &claudeAdapter{raw: m, modelName: a.modelName}, nil
 }
 
 func (a *claudeAdapter) injectOpts(opts []model.Option) []model.Option {

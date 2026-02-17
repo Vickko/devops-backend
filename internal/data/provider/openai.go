@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"devops-backend/internal/biz"
@@ -15,14 +16,14 @@ import (
 )
 
 // newOpenAIRaw 创建原始 OpenAI client（忠实反映厂商默认行为，始终使用 Chat Completions API）
-func newOpenAIRaw(ctx context.Context, cfg conf.Client, modelName string, opts ...model.Option) (model.BaseChatModel, error) {
+func newOpenAIRaw(ctx context.Context, cfg conf.Client, modelName string, opts ...model.Option) (model.ToolCallingChatModel, error) {
 	return openai.NewChatModel(ctx, &openai.ChatModelConfig{
 		BaseURL: cfg.BaseURL, APIKey: cfg.APIKey, Model: modelName,
 	})
 }
 
 // newOpenAI 创建 OpenAI 模型，自动选择 Responses API 或 Chat Completions API
-func newOpenAI(ctx context.Context, cfg conf.Client, modelName string, opts ...model.Option) (model.BaseChatModel, error) {
+func newOpenAI(ctx context.Context, cfg conf.Client, modelName string, opts ...model.Option) (model.ToolCallingChatModel, error) {
 	if shouldUseResponsesAPI(modelName) {
 		raw, err := openairesponse.NewChatModel(ctx, &openairesponse.Config{
 			BaseURL: cfg.BaseURL, APIKey: cfg.APIKey, Model: modelName,
@@ -52,7 +53,7 @@ func shouldUseResponsesAPI(modelName string) bool {
 // --- Chat Completions adapter ---
 
 type openAIAdapter struct {
-	raw       model.BaseChatModel
+	raw       model.ToolCallingChatModel
 	modelName string
 }
 
@@ -62,6 +63,14 @@ func (a *openAIAdapter) Generate(ctx context.Context, messages []*schema.Message
 
 func (a *openAIAdapter) Stream(ctx context.Context, messages []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
 	return a.raw.Stream(ctx, messages, a.injectOpts(opts)...)
+}
+
+func (a *openAIAdapter) WithTools(tools []*schema.ToolInfo) (model.ToolCallingChatModel, error) {
+	m, err := a.raw.WithTools(tools)
+	if err != nil {
+		return nil, err
+	}
+	return &openAIAdapter{raw: m, modelName: a.modelName}, nil
 }
 
 func (a *openAIAdapter) injectOpts(opts []model.Option) []model.Option {
@@ -91,6 +100,20 @@ func (a *openAIResponseAdapter) Generate(ctx context.Context, messages []*schema
 
 func (a *openAIResponseAdapter) Stream(ctx context.Context, messages []*schema.Message, opts ...model.Option) (*schema.StreamReader[*schema.Message], error) {
 	return a.raw.Stream(ctx, messages, a.injectOpts(opts)...)
+}
+
+func (a *openAIResponseAdapter) WithTools(tools []*schema.ToolInfo) (model.ToolCallingChatModel, error) {
+	if tc, ok := a.raw.(model.ToolCallingChatModel); ok {
+		m, err := tc.WithTools(tools)
+		if err != nil {
+			return nil, err
+		}
+		return &openAIResponseAdapter{raw: m, modelName: a.modelName}, nil
+	}
+	if len(tools) > 0 {
+		return nil, fmt.Errorf("openAIResponseAdapter: underlying model does not support tool calling")
+	}
+	return a, nil
 }
 
 func (a *openAIResponseAdapter) injectOpts(opts []model.Option) []model.Option {

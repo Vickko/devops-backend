@@ -30,5 +30,5 @@ func GetParams(opts ...model.Option) *RequestParams {
 
 // ChatModelProvider 聊天模型提供者接口
 type ChatModelProvider interface {
-	CreateChatModel(ctx context.Context, modelName string, opts ...model.Option) (model.BaseChatModel, error)
+	CreateChatModel(ctx context.Context, modelName string, opts ...model.Option) (model.ToolCallingChatModel, error)
 }

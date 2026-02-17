@@ -15,7 +15,7 @@ import (
 )
 
 // newGeminiRaw 创建原始 Gemini client（忠实反映厂商默认行为）
-func newGeminiRaw(ctx context.Context, cfg conf.Client, modelName string, opts ...model.Option) (model.BaseChatModel, error) {
+func newGeminiRaw(ctx context.Context, cfg conf.Client, modelName string, opts ...model.Option) (model.ToolCallingChatModel, error) {
 	gc, err := genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey:      cfg.APIKey,
 		HTTPOptions: genai.HTTPOptions{BaseURL: cfg.BaseURL},
@@ -29,7 +29,7 @@ func newGeminiRaw(ctx context.Context, cfg conf.Client, modelName string, opts .
 }
 
 // newGemini 创建 Gemini 模型 + thinking/fallback adapter
-func newGemini(ctx context.Context, cfg conf.Client, modelName string, opts ...model.Option) (model.BaseChatModel, error) {
+func newGemini(ctx context.Context, cfg conf.Client, modelName string, opts ...model.Option) (model.ToolCallingChatModel, error) {
 	gc, err := genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey:      cfg.APIKey,
 		HTTPOptions: genai.HTTPOptions{BaseURL: cfg.BaseURL},
@@ -51,7 +51,7 @@ func newGemini(ctx context.Context, cfg conf.Client, modelName string, opts ...m
 }
 
 type geminiAdapter struct {
-	raw       model.BaseChatModel
+	raw       model.ToolCallingChatModel
 	modelName string
 }
 
@@ -81,6 +81,14 @@ func (a *geminiAdapter) Stream(ctx context.Context, messages []*schema.Message, 
 		return nil, err
 	}
 	return wrapHideThinking(sr, params), nil
+}
+
+func (a *geminiAdapter) WithTools(tools []*schema.ToolInfo) (model.ToolCallingChatModel, error) {
+	m, err := a.raw.WithTools(tools)
+	if err != nil {
+		return nil, err
+	}
+	return &geminiAdapter{raw: m, modelName: a.modelName}, nil
 }
 
 func (a *geminiAdapter) injectThinkingConfig(opts []model.Option) []model.Option {

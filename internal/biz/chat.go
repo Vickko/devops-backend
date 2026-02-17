@@ -8,6 +8,8 @@ import (
 
 	"devops-backend/internal/conf"
 
+	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 )
 
@@ -25,6 +27,20 @@ func NewChatUsecase(sessionRepo SessionRepo, provider ChatModelProvider, cfg con
 		provider:     provider,
 		defaultModel: cfg.DefaultModel,
 	}
+}
+
+// createAgent builds a ChatModelAgent for the given model name.
+func (uc *ChatUsecase) createAgent(ctx context.Context, modelName string) (*adk.ChatModelAgent, error) {
+	chatModel, err := uc.provider.CreateChatModel(ctx, modelName)
+	if err != nil {
+		return nil, err
+	}
+	return adk.NewChatModelAgent(ctx, &adk.ChatModelAgentConfig{
+		Name:        "chat_assistant",
+		Description: "友好的AI聊天助手",
+		Instruction: "你是一个友好的AI助手，请用简洁明了的方式回答用户的问题。",
+		Model:       chatModel,
+	})
 }
 
 // ChatRequest 聊天请求
@@ -77,27 +93,51 @@ func (uc *ChatUsecase) Chat(ctx context.Context, req *ChatRequest) (*ChatRespons
 		modelName = uc.defaultModel
 	}
 
-	// 创建 ChatModel
+	agent, err := uc.createAgent(ctx, modelName)
+	if err != nil {
+		return nil, wrapError("create agent", err)
+	}
+
+	// 运行 agent（非流式）
 	thinkingOpts := WithParams(&RequestParams{
 		Thinking: req.Thinking,
 	})
-	chatModel, err := uc.provider.CreateChatModel(ctx, modelName, thinkingOpts)
-	if err != nil {
-		return nil, wrapError("create chat model", err)
+	iter := agent.Run(ctx, &adk.AgentInput{
+		Messages:       messages,
+		EnableStreaming: false,
+	}, adk.WithChatModelOptions([]model.Option{thinkingOpts}))
+
+	// 收集结果
+	var result *schema.Message
+	for {
+		event, ok := iter.Next()
+		if !ok {
+			break
+		}
+		if event.Err != nil {
+			return nil, wrapError("agent run", event.Err)
+		}
+		if event.Output != nil && event.Output.MessageOutput != nil {
+			msg, err := event.Output.MessageOutput.GetMessage()
+			if err != nil {
+				return nil, wrapError("get message", err)
+			}
+			if msg != nil {
+				result = msg
+			}
+		}
 	}
 
-	// 调用模型
-	resp, err := chatModel.Generate(ctx, messages, thinkingOpts)
-	if err != nil {
-		return nil, wrapError("generate response", err)
+	if result == nil {
+		return nil, wrapError("agent run", fmt.Errorf("no response from agent"))
 	}
 
 	// 追加助手回复到会话历史
-	if _, err := uc.sessionRepo.AppendMessage(req.Session, resp, modelName); err != nil {
+	if _, err := uc.sessionRepo.AppendMessage(req.Session, result, modelName); err != nil {
 		return nil, wrapError("append assistant message", err)
 	}
 
-	return &ChatResponse{Message: *resp, Model: modelName}, nil
+	return &ChatResponse{Message: *result, Model: modelName}, nil
 }
 
 // StreamChunk 流式响应块，区分思考内容和最终内容
@@ -175,12 +215,8 @@ func (uc *ChatUsecase) ChatStream(
 		return wrapError("get session", ErrSessionNotFound)
 	}
 
-	// 构建消息列表（带系统提示）
-	systemPrompt := &schema.Message{
-		Role:    schema.System,
-		Content: "你是一个友好的AI助手，请用简洁明了的方式回答用户的问题。",
-	}
-	messages := append([]*schema.Message{systemPrompt}, extractMessages(session)...)
+	// 构建消息列表（instruction 已在 agent config 中，无需手动添加系统提示）
+	messages := extractMessages(session)
 
 	// 确定使用的模型
 	modelName := req.Model
@@ -188,60 +224,66 @@ func (uc *ChatUsecase) ChatStream(
 		modelName = uc.defaultModel
 	}
 
-	// 创建 ChatModel
+	// 创建 agent
+	agent, err := uc.createAgent(ctx, modelName)
+	if err != nil {
+		return wrapError("create agent", err)
+	}
+
+	// 运行 agent（流式）
 	thinkingOpts := WithParams(&RequestParams{
 		Thinking: req.Thinking,
 	})
-	chatModel, err := uc.provider.CreateChatModel(ctx, modelName, thinkingOpts)
-	if err != nil {
-		return wrapError("create chat model", err)
-	}
-
-	// 调用流式接口
-	streamReader, err := chatModel.Stream(ctx, messages, thinkingOpts)
-	if err != nil {
-		return wrapError("stream response", err)
-	}
-	defer streamReader.Close()
+	iter := agent.Run(ctx, &adk.AgentInput{
+		Messages:       messages,
+		EnableStreaming: true,
+	}, adk.WithChatModelOptions([]model.Option{thinkingOpts}))
 
 	// 收集完整回复用于保存会话
 	var fullContent strings.Builder
 	var fullReasoning strings.Builder
 	var multiContent []schema.MessageOutputPart
 
-	// 循环读取流式数据
+	// 遍历事件
 	for {
-		chunk, err := streamReader.Recv()
-		if err != nil {
-			if err == io.EOF {
-				break
+		event, ok := iter.Next()
+		if !ok {
+			break
+		}
+		if event.Err != nil {
+			return wrapError("agent run", event.Err)
+		}
+		if event.Output == nil || event.Output.MessageOutput == nil {
+			continue
+		}
+
+		mv := event.Output.MessageOutput
+		if mv.IsStreaming {
+			if err := consumeStream(mv.MessageStream, &fullContent, &fullReasoning, &multiContent, onChunk); err != nil {
+				return err
 			}
-			return wrapError("recv stream", err)
-		}
+		} else if mv.Message != nil {
+			// 非流式：直接从 Message 提取
+			streamChunk := StreamChunk{
+				Content:                  mv.Message.Content,
+				ReasoningContent:         mv.Message.ReasoningContent,
+				AssistantGenMultiContent: mv.Message.AssistantGenMultiContent,
+			}
 
-		// 构建流式响应块
-		streamChunk := StreamChunk{
-			Content:                  chunk.Content,
-			ReasoningContent:         chunk.ReasoningContent,
-			AssistantGenMultiContent: chunk.AssistantGenMultiContent,
-		}
+			if mv.Message.ReasoningContent != "" {
+				fullReasoning.WriteString(mv.Message.ReasoningContent)
+			}
+			if mv.Message.Content != "" {
+				fullContent.WriteString(mv.Message.Content)
+			}
+			if len(mv.Message.AssistantGenMultiContent) > 0 {
+				multiContent = append(multiContent, mv.Message.AssistantGenMultiContent...)
+			}
 
-		// 收集完整内容
-		if chunk.ReasoningContent != "" {
-			fullReasoning.WriteString(chunk.ReasoningContent)
-		}
-		if chunk.Content != "" {
-			fullContent.WriteString(chunk.Content)
-		}
-		// 收集多模态内容（图像等）
-		if len(chunk.AssistantGenMultiContent) > 0 {
-			multiContent = append(multiContent, chunk.AssistantGenMultiContent...)
-		}
-
-		// 有内容时调用回调
-		if streamChunk.Content != "" || streamChunk.ReasoningContent != "" || len(streamChunk.AssistantGenMultiContent) > 0 {
-			if cbErr := onChunk(streamChunk); cbErr != nil {
-				return cbErr
+			if streamChunk.Content != "" || streamChunk.ReasoningContent != "" || len(streamChunk.AssistantGenMultiContent) > 0 {
+				if cbErr := onChunk(streamChunk); cbErr != nil {
+					return cbErr
+				}
 			}
 		}
 	}
@@ -258,6 +300,48 @@ func (uc *ChatUsecase) ChatStream(
 	}
 
 	return nil
+}
+
+// consumeStream reads all frames from a MessageStream, accumulates content, and calls onChunk.
+// The stream is always closed when this function returns.
+func consumeStream(
+	stream *schema.StreamReader[*schema.Message],
+	fullContent, fullReasoning *strings.Builder,
+	multiContent *[]schema.MessageOutputPart,
+	onChunk StreamChunkCallback,
+) error {
+	defer stream.Close()
+	for {
+		chunk, err := stream.Recv()
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return wrapError("recv stream", err)
+		}
+
+		sc := StreamChunk{
+			Content:                  chunk.Content,
+			ReasoningContent:         chunk.ReasoningContent,
+			AssistantGenMultiContent: chunk.AssistantGenMultiContent,
+		}
+
+		if chunk.ReasoningContent != "" {
+			fullReasoning.WriteString(chunk.ReasoningContent)
+		}
+		if chunk.Content != "" {
+			fullContent.WriteString(chunk.Content)
+		}
+		if len(chunk.AssistantGenMultiContent) > 0 {
+			*multiContent = append(*multiContent, chunk.AssistantGenMultiContent...)
+		}
+
+		if sc.Content != "" || sc.ReasoningContent != "" || len(sc.AssistantGenMultiContent) > 0 {
+			if cbErr := onChunk(sc); cbErr != nil {
+				return cbErr
+			}
+		}
+	}
 }
 
 func parseRole(role string) schema.RoleType {

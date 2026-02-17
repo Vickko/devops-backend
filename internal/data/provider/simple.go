@@ -13,19 +13,19 @@ import (
 )
 
 // newOpenAICompatible 直通 OpenAI 兼容接口（grok, glm, kimi, minimax, default fallback）
-func newOpenAICompatible(ctx context.Context, cfg conf.Client, modelName string, opts ...model.Option) (model.BaseChatModel, error) {
+func newOpenAICompatible(ctx context.Context, cfg conf.Client, modelName string, opts ...model.Option) (model.ToolCallingChatModel, error) {
 	return openai.NewChatModel(ctx, &openai.ChatModelConfig{
 		BaseURL: cfg.BaseURL, APIKey: cfg.APIKey, Model: modelName,
 	})
 }
 
-func newArkBot(ctx context.Context, cfg conf.Client, modelName string, opts ...model.Option) (model.BaseChatModel, error) {
+func newArkBot(ctx context.Context, cfg conf.Client, modelName string, opts ...model.Option) (model.ToolCallingChatModel, error) {
 	return arkbot.NewChatModel(ctx, &arkbot.Config{
 		BaseURL: cfg.BaseURL, APIKey: cfg.APIKey, Model: modelName,
 	})
 }
 
-func newQianfan(ctx context.Context, cfg conf.Client, modelName string, opts ...model.Option) (model.BaseChatModel, error) {
+func newQianfan(ctx context.Context, cfg conf.Client, modelName string, opts ...model.Option) (model.ToolCallingChatModel, error) {
 	if cfg.APIKey != "" {
 		qfCfg := qianfan.GetQianfanSingletonConfig()
 		if parts := strings.SplitN(cfg.APIKey, ":", 2); len(parts) == 2 {

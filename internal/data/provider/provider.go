@@ -10,7 +10,7 @@ import (
 )
 
 // createFunc 创建 ChatModel 的工厂函数
-type createFunc func(ctx context.Context, cfg conf.Client, modelName string, opts ...model.Option) (model.BaseChatModel, error)
+type createFunc func(ctx context.Context, cfg conf.Client, modelName string, opts ...model.Option) (model.ToolCallingChatModel, error)
 
 type providerEntry struct {
 	clientName string
@@ -54,13 +54,13 @@ func NewMixedProvider(cfg conf.Eino) *MixedProvider {
 }
 
 // CreateChatModel 根据 modelName 自动路由，带 adapter
-func (m *MixedProvider) CreateChatModel(ctx context.Context, modelName string, opts ...model.Option) (model.BaseChatModel, error) {
+func (m *MixedProvider) CreateChatModel(ctx context.Context, modelName string, opts ...model.Option) (model.ToolCallingChatModel, error) {
 	create, cfg := m.resolve(modelName, false)
 	return create(ctx, cfg, modelName, opts...)
 }
 
 // CreateRawChatModel 根据 modelName 自动路由，返回原始 client（不包装 adapter）
-func (m *MixedProvider) CreateRawChatModel(ctx context.Context, modelName string, opts ...model.Option) (model.BaseChatModel, error) {
+func (m *MixedProvider) CreateRawChatModel(ctx context.Context, modelName string, opts ...model.Option) (model.ToolCallingChatModel, error) {
 	create, cfg := m.resolve(modelName, true)
 	return create(ctx, cfg, modelName, opts...)
 }
