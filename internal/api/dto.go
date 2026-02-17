@@ -11,9 +11,8 @@ import (
 type ChatRequest struct {
 	schema.Message
 	Model    string `json:"model,omitempty"`
-	Client   string `json:"client,omitempty"` // 指定客户端，可覆盖关键词匹配
 	Session  string `json:"session,omitempty"` // 可选，不传时后端生成
-	Thinking *bool  `json:"thinking,omitempty"` // 是否启用思考模式
+	Thinking *bool  `json:"thinking,omitempty"`
 }
 
 // ChatResponse 聊天响应 DTO

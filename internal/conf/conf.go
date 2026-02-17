@@ -20,8 +20,9 @@ type Server struct {
 
 // Eino is the eino config.
 type Eino struct {
-	DefaultModel string            `yaml:"default_model"`
-	Clients      map[string]Client `yaml:"clients"`
+	DefaultModel   string            `yaml:"default_model"`
+	Clients        map[string]Client `yaml:"clients"`
+	ModelOverrides map[string]string `yaml:"model_overrides"` // model name → client name, 强制导流
 }
 
 // Client 客户端配置

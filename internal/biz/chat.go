@@ -13,27 +13,26 @@ import (
 
 // ChatUsecase 聊天业务逻辑
 type ChatUsecase struct {
-	sessionRepo   SessionRepo
-	clientFactory ChatModelFactory
-	defaultModel  string
+	sessionRepo  SessionRepo
+	provider     ChatModelProvider
+	defaultModel string
 }
 
 // NewChatUsecase 创建 ChatUsecase
-func NewChatUsecase(sessionRepo SessionRepo, clientFactory ChatModelFactory, cfg conf.Eino) *ChatUsecase {
+func NewChatUsecase(sessionRepo SessionRepo, provider ChatModelProvider, cfg conf.Eino) *ChatUsecase {
 	return &ChatUsecase{
-		sessionRepo:   sessionRepo,
-		clientFactory: clientFactory,
-		defaultModel:  cfg.DefaultModel,
+		sessionRepo:  sessionRepo,
+		provider:     provider,
+		defaultModel: cfg.DefaultModel,
 	}
 }
 
 // ChatRequest 聊天请求
 type ChatRequest struct {
 	schema.Message
-	Model           string `json:"model,omitempty"`
-	Client          string `json:"client,omitempty"` // 指定客户端，可覆盖关键词匹配
-	Session         string `json:"session"`
-	Thinking *bool  `json:"thinking,omitempty"` // 是否启用思考模式
+	Model    string `json:"model,omitempty"`
+	Session  string `json:"session"`
+	Thinking *bool  `json:"thinking,omitempty"`
 }
 
 // ChatResponse 聊天响应
@@ -78,21 +77,17 @@ func (uc *ChatUsecase) Chat(ctx context.Context, req *ChatRequest) (*ChatRespons
 		modelName = uc.defaultModel
 	}
 
-	// 根据模型名称和请求中的 client 字段解析客户端
-	clientName := uc.clientFactory.ResolveClient(modelName, req.Client)
-
 	// 创建 ChatModel
-	// 当客户端是通过关键词自动匹配时使用 adapter，强制指定时使用原始客户端
-	useAdapter := req.Client == ""
-	chatModel, err := uc.clientFactory.CreateChatModel(ctx, clientName, modelName, useAdapter)
+	thinkingOpts := WithParams(&RequestParams{
+		Thinking: req.Thinking,
+	})
+	chatModel, err := uc.provider.CreateChatModel(ctx, modelName, thinkingOpts)
 	if err != nil {
 		return nil, wrapError("create chat model", err)
 	}
 
 	// 调用模型
-	resp, err := chatModel.Generate(ctx, messages, WithParams(&RequestParams{
-		Thinking: req.Thinking,
-	}))
+	resp, err := chatModel.Generate(ctx, messages, thinkingOpts)
 	if err != nil {
 		return nil, wrapError("generate response", err)
 	}
@@ -193,21 +188,17 @@ func (uc *ChatUsecase) ChatStream(
 		modelName = uc.defaultModel
 	}
 
-	// 根据模型名称和请求中的 client 字段解析客户端
-	clientName := uc.clientFactory.ResolveClient(modelName, req.Client)
-
 	// 创建 ChatModel
-	// 当客户端是通过关键词自动匹配时使用 adapter，强制指定时使用原始客户端
-	useAdapter := req.Client == ""
-	chatModel, err := uc.clientFactory.CreateChatModel(ctx, clientName, modelName, useAdapter)
+	thinkingOpts := WithParams(&RequestParams{
+		Thinking: req.Thinking,
+	})
+	chatModel, err := uc.provider.CreateChatModel(ctx, modelName, thinkingOpts)
 	if err != nil {
 		return wrapError("create chat model", err)
 	}
 
 	// 调用流式接口
-	streamReader, err := chatModel.Stream(ctx, messages, WithParams(&RequestParams{
-		Thinking: req.Thinking,
-	}))
+	streamReader, err := chatModel.Stream(ctx, messages, thinkingOpts)
 	if err != nil {
 		return wrapError("stream response", err)
 	}

@@ -14,6 +14,7 @@ import (
 	"devops-backend/internal/biz"
 	"devops-backend/internal/conf"
 	"devops-backend/internal/data"
+	"devops-backend/internal/data/provider"
 	"devops-backend/internal/server"
 	"devops-backend/internal/service"
 )
@@ -45,7 +46,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer sessionRepo.Close()
-	clientFactory := data.NewClientFactory(cfg.Eino)
+	clientFactory := provider.NewMixedProvider(cfg.Eino)
 
 	// auth 层
 	var oidcClient *auth.OIDCClient

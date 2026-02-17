@@ -25,7 +25,6 @@ func (s *chatService) Chat(ctx context.Context, req *api.ChatRequest) (*api.Chat
 	bizReq := &biz.ChatRequest{
 		Message:  req.Message,
 		Model:    req.Model,
-		Client:   req.Client,
 		Session:  req.Session,
 		Thinking: req.Thinking,
 	}
@@ -54,7 +53,6 @@ func (s *chatService) ChatStream(
 	bizReq := &biz.ChatRequest{
 		Message:  req.Message,
 		Model:    req.Model,
-		Client:   req.Client,
 		Session:  req.Session,
 		Thinking: req.Thinking,
 	}

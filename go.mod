@@ -18,6 +18,7 @@ require (
 	github.com/coreos/go-oidc/v3 v3.17.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/mux v1.8.1
+	github.com/volcengine/volcengine-go-sdk v1.1.49
 	golang.org/x/oauth2 v0.28.0
 	google.golang.org/genai v1.41.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -103,7 +104,6 @@ require (
 	github.com/tidwall/sjson v1.2.5 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/volcengine/volc-sdk-golang v1.0.23 // indirect
-	github.com/volcengine/volcengine-go-sdk v1.1.49 // indirect
 	github.com/wk8/go-ordered-map/v2 v2.1.8 // indirect
 	github.com/yargevad/filepathx v1.0.0 // indirect
 	go.opencensus.io v0.24.0 // indirect

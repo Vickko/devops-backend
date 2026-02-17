@@ -14,10 +14,10 @@ import (
 type DebugGraphs struct{}
 
 // NewDebugGraphs 创建并注册所有调试图
-func NewDebugGraphs(ctx context.Context, clientFactory ChatModelFactory, cfg conf.Eino) (*DebugGraphs, error) {
+func NewDebugGraphs(ctx context.Context, provider ChatModelProvider, cfg conf.Eino) (*DebugGraphs, error) {
 	g := &DebugGraphs{}
 
-	if err := g.buildSimpleChatGraph(ctx, clientFactory, cfg); err != nil {
+	if err := g.buildSimpleChatGraph(ctx, provider, cfg); err != nil {
 		return nil, fmt.Errorf("build simple chat graph: %w", err)
 	}
 
@@ -25,7 +25,7 @@ func NewDebugGraphs(ctx context.Context, clientFactory ChatModelFactory, cfg con
 }
 
 // buildSimpleChatGraph 构建简单聊天图
-func (g *DebugGraphs) buildSimpleChatGraph(ctx context.Context, clientFactory ChatModelFactory, cfg conf.Eino) error {
+func (g *DebugGraphs) buildSimpleChatGraph(ctx context.Context, provider ChatModelProvider, cfg conf.Eino) error {
 	var messageHistory []*schema.Message
 
 	graph := compose.NewGraph[*schema.Message, *schema.Message]()
@@ -45,7 +45,7 @@ func (g *DebugGraphs) buildSimpleChatGraph(ctx context.Context, clientFactory Ch
 	}
 
 	// ChatModel 节点
-	chatModel, err := NewChatModel(ctx, clientFactory, cfg)
+	chatModel, err := NewChatModel(ctx, provider, cfg)
 	if err != nil {
 		return fmt.Errorf("create chat model: %w", err)
 	}
