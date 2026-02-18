@@ -215,6 +215,24 @@ func (r *sqliteSessionRepo) GetTreeID(sessionID string) (string, error) {
 	return treeID, nil
 }
 
+// GetLastActiveSessionID 获取 tree 的最后活跃 session_id
+func (r *sqliteSessionRepo) GetLastActiveSessionID(treeID string) (string, error) {
+	var sessionID string
+	err := r.db.QueryRow(`
+		SELECT s.id
+		FROM sessions s
+		WHERE s.tree_id = ?
+		ORDER BY (
+			SELECT MAX(m.id) FROM messages m WHERE m.session_id = s.id
+		) DESC, s.id DESC
+		LIMIT 1
+	`, treeID).Scan(&sessionID)
+	if err != nil {
+		return "", fmt.Errorf("%w: %s", biz.ErrTreeNotFound, treeID)
+	}
+	return sessionID, nil
+}
+
 // GetSessionMessages 获取 session 的完整消息链
 func (r *sqliteSessionRepo) GetSessionMessages(sessionID string) biz.Session {
 	// 一次查询获取该 session 所属 tree 的所有消息

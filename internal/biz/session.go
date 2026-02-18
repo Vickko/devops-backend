@@ -15,10 +15,10 @@ type Session []*ChatResponse
 
 // SessionTreeInfo 会话树元信息（对外展示）
 type SessionTreeInfo struct {
-	ID                  string    // tree_id
-	Title               string    // 第一条用户消息前15字
-	LastActiveSessionID string    // 最后活跃的 session
-	LastMessage         string    // 最新消息内容
+	ID                  string // tree_id
+	Title               string // 第一条用户消息前15字
+	LastActiveSessionID string // 最后活跃的 session
+	LastMessage         string // 最新消息内容
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
 }
@@ -33,6 +33,8 @@ type SessionRepo interface {
 	SessionExists(sessionID string) bool
 	// GetTreeID 获取 session 所属的 tree_id
 	GetTreeID(sessionID string) (string, error)
+	// GetLastActiveSessionID 获取 tree 的最后活跃 session_id
+	GetLastActiveSessionID(treeID string) (string, error)
 	// GetSessionMessages 获取 session 的完整消息链（包含祖先消息）
 	GetSessionMessages(sessionID string) Session
 	// AppendMessage 追加消息到 session，返回新消息 ID

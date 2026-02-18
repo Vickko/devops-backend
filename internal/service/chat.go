@@ -27,13 +27,13 @@ func (s *chatService) Chat(ctx context.Context, req *api.ChatRequest) (*api.Chat
 	bizReq := &biz.ChatRequest{
 		Message:  req.Message,
 		Model:    req.Model,
-		Session:  req.Session,
+		ThreadID: req.ThreadID,
 		Thinking: req.Thinking,
 	}
 
-	treeID, sessionID, _, err := s.sessionUsecase.ResolveSession(bizReq.Session)
+	threadID, sessionID, _, err := s.sessionUsecase.ResolveThread(bizReq.ThreadID)
 	if err != nil {
-		return nil, fmt.Errorf("resolve session: %w", err)
+		return nil, fmt.Errorf("resolve thread: %w", err)
 	}
 
 	userMsg := biz.BuildUserMessage(bizReq)
@@ -59,7 +59,7 @@ func (s *chatService) Chat(ctx context.Context, req *api.ChatRequest) (*api.Chat
 		Message:   *result,
 		Model:     modelName,
 		SessionID: sessionID,
-		TreeID:    treeID,
+		TreeID:    threadID,
 	}, nil
 }
 
@@ -73,18 +73,19 @@ func (s *chatService) ChatStream(
 	bizReq := &biz.ChatRequest{
 		Message:  req.Message,
 		Model:    req.Model,
-		Session:  req.Session,
+		ThreadID: req.ThreadID,
 		Thinking: req.Thinking,
 	}
 
-	treeID, sessionID, isNew, err := s.sessionUsecase.ResolveSession(bizReq.Session)
+	threadID, sessionID, isNew, err := s.sessionUsecase.ResolveThread(bizReq.ThreadID)
 	if err != nil {
-		return fmt.Errorf("resolve session: %w", err)
+		return fmt.Errorf("resolve thread: %w", err)
 	}
 
 	if err := onStart(api.StreamMetaInfo{
-		TreeID:    treeID,
+		ThreadID:  threadID,
 		SessionID: sessionID,
+		RunID:     req.RunID,
 		IsNew:     isNew,
 	}); err != nil {
 		return err
@@ -105,6 +106,7 @@ func (s *chatService) ChatStream(
 			Content:                  chunk.Content,
 			ReasoningContent:         chunk.ReasoningContent,
 			AssistantGenMultiContent: chunk.AssistantGenMultiContent,
+			ToolCalls:                chunk.ToolCalls,
 		})
 	}
 
@@ -144,6 +146,12 @@ func (s *chatService) ListSessions(ctx context.Context) ([]api.SessionInfo, erro
 // GetSession 获取会话详情
 func (s *chatService) GetSession(ctx context.Context, sessionID string) (*api.GetSessionResponse, error) {
 	session, err := s.sessionUsecase.GetSession(sessionID)
+	if err != nil {
+		// 兼容：如果传入的是 thread_id，则解析到最后活跃 session 再读取消息
+		if _, resolvedSessionID, _, resolveErr := s.sessionUsecase.ResolveThread(sessionID); resolveErr == nil {
+			session, err = s.sessionUsecase.GetSession(resolvedSessionID)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/cloudwego/eino/schema"
+	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 )
 
@@ -29,11 +30,17 @@ func (h *ChatHandler) RegisterRoutes(r *mux.Router) {
 	r.HandleFunc("/sessions/{id}", h.getSession).Methods(http.MethodGet)
 }
 
-// chat 流式聊天接口 (SSE)
+// chat 流式聊天接口（AG-UI SSE）
 func (h *ChatHandler) chat(w http.ResponseWriter, r *http.Request) {
-	var req ChatRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	var runInput RunAgentInput
+	if err := json.NewDecoder(r.Body).Decode(&runInput); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body: " + err.Error()})
+		return
+	}
+
+	req, err := buildChatRequestFromRunInput(&runInput)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 
@@ -43,105 +50,455 @@ func (h *ChatHandler) chat(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no") // 禁用 nginx 缓冲
 
-	// 获取 flusher
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming not supported"})
 		return
 	}
 
-	// 调用流式服务（双回调）
-	err := h.chatService.ChatStream(r.Context(), &req,
-		// onStart: 流开始前回调，处理 session 信息
+	encoder := newAGUIStreamEncoder(w, flusher, req.ThreadID, req.RunID)
+
+	err = h.chatService.ChatStream(r.Context(), req,
 		func(info StreamMetaInfo) error {
-			// 总是发送 info 事件，包含 tree_id 和 session
-			jsonData, _ := json.Marshal(map[string]interface{}{
-				"tree_id": info.TreeID,
-				"session": info.SessionID,
-				"is_new":  info.IsNew,
-			})
-			fmt.Fprintf(w, "event: info\ndata: %s\n\n", jsonData)
-			flusher.Flush()
-			return nil
+			return encoder.onStart(info)
 		},
-		// onChunk: 流数据回调
 		func(chunk StreamChunk) error {
-			return h.sendStreamChunk(w, flusher, chunk)
+			return encoder.onChunk(chunk)
 		},
 	)
-
 	if err != nil {
-		// session 不存在的错误
-		if strings.Contains(err.Error(), "session not found") {
-			fmt.Fprintf(w, "event: error\ndata: %s\n\n", `{"error":"invalid_session","message":"Session not found"}`)
-			flusher.Flush()
-			return
+		code := "internal_error"
+		switch {
+		case strings.Contains(err.Error(), "session tree not found"):
+			code = "invalid_thread"
+		case strings.Contains(err.Error(), "session not found"):
+			code = "invalid_session"
 		}
-		// 其他错误
-		fmt.Fprintf(w, "event: error\ndata: %s\n\n", err.Error())
-		flusher.Flush()
+		_ = encoder.onError(code, err.Error())
 		return
 	}
 
-	// 发送完成事件
-	fmt.Fprintf(w, "event: done\ndata: [DONE]\n\n")
-	flusher.Flush()
+	_ = encoder.onDone()
 }
 
-// sendStreamChunk 发送流式数据块
-func (h *ChatHandler) sendStreamChunk(w http.ResponseWriter, flusher http.Flusher, chunk StreamChunk) error {
-	// 发送思考内容（使用 reasoning 事件）
-	if chunk.ReasoningContent != "" {
-		jsonData, _ := json.Marshal(chunk.ReasoningContent)
-		fmt.Fprintf(w, "event: reasoning\ndata: %s\n\n", jsonData)
-		flusher.Flush()
+func buildChatRequestFromRunInput(input *RunAgentInput) (*ChatRequest, error) {
+	if input == nil {
+		return nil, fmt.Errorf("request body is required")
+	}
+	if len(input.Messages) == 0 {
+		return nil, fmt.Errorf("messages is required")
 	}
 
-	// 发送最终内容（使用 content 事件）
-	if chunk.Content != "" {
-		jsonData, _ := json.Marshal(chunk.Content)
-		fmt.Fprintf(w, "event: content\ndata: %s\n\n", jsonData)
-		flusher.Flush()
+	lastMsg := input.Messages[len(input.Messages)-1]
+	msg, err := parseRunAgentMessage(lastMsg)
+	if err != nil {
+		return nil, err
 	}
 
-	// 发送多模态内容（根据类型分别发送）
-	if len(chunk.AssistantGenMultiContent) > 0 {
-		for _, part := range chunk.AssistantGenMultiContent {
-			var eventName string
-			var eventData interface{}
+	model, thinking := parseForwardedProps(input.ForwardedProps)
+	runID := strings.TrimSpace(input.RunID)
+	if runID == "" {
+		runID = "run_" + uuid.NewString()
+	}
 
+	return &ChatRequest{
+		Message:  *msg,
+		Model:    model,
+		ThreadID: strings.TrimSpace(input.ThreadID),
+		RunID:    runID,
+		Thinking: thinking,
+	}, nil
+}
+
+func parseRunAgentMessage(msg RunAgentInputMessage) (*schema.Message, error) {
+	content, err := parseRunAgentContent(msg.Content)
+	if err != nil {
+		return nil, err
+	}
+
+	return &schema.Message{
+		Role:       parseRunAgentRole(msg.Role),
+		Content:    content,
+		Name:       msg.Name,
+		ToolCallID: msg.ToolCallID,
+		ToolCalls:  msg.ToolCalls,
+	}, nil
+}
+
+func parseRunAgentRole(role string) schema.RoleType {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "system":
+		return schema.System
+	case "assistant":
+		return schema.Assistant
+	case "tool":
+		return schema.Tool
+	default:
+		return schema.User
+	}
+}
+
+func parseRunAgentContent(raw json.RawMessage) (string, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return "", nil
+	}
+
+	// AG-UI Message.content 的文本模式（字符串）
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		return text, nil
+	}
+
+	// AG-UI Message.content 的分片模式（当前仅支持 text）
+	var parts []RunAgentInputContentPart
+	if err := json.Unmarshal(raw, &parts); err == nil {
+		var sb strings.Builder
+		for _, part := range parts {
 			switch part.Type {
-			case schema.ChatMessagePartTypeText:
-				// 文本内容已经通过 content 事件发送，跳过
-				continue
-			case schema.ChatMessagePartTypeImageURL:
-				eventName = "image"
-				eventData = part.Image
-			case schema.ChatMessagePartTypeAudioURL:
-				eventName = "audio"
-				eventData = part.Audio
-			case schema.ChatMessagePartTypeVideoURL:
-				eventName = "video"
-				eventData = part.Video
+			case "text":
+				sb.WriteString(part.Text)
+			case "binary":
+				return "", fmt.Errorf("binary content is not supported yet")
 			default:
-				// 未知类型，使用通用的 multimodal 事件作为后备
-				eventName = "multimodal"
-				eventData = part
+				return "", fmt.Errorf("unsupported content part type: %s", part.Type)
 			}
+		}
+		return sb.String(), nil
+	}
 
-			jsonData, _ := json.Marshal(eventData)
-			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventName, jsonData)
-			flusher.Flush()
+	return "", fmt.Errorf("unsupported message content format")
+}
+
+func parseForwardedProps(props map[string]any) (model string, thinking *bool) {
+	if props == nil {
+		return "", nil
+	}
+
+	if rawModel, ok := props["model"]; ok {
+		if modelStr, ok := rawModel.(string); ok {
+			model = modelStr
+		}
+	}
+
+	if rawThinking, ok := props["thinking"]; ok {
+		if thinkingVal, ok := rawThinking.(bool); ok {
+			thinking = &thinkingVal
+		}
+	}
+
+	return model, thinking
+}
+
+type aguiToolCallState struct {
+	toolCallName string
+	lastArgs     string
+}
+
+type aguiStreamEncoder struct {
+	w       http.ResponseWriter
+	flusher http.Flusher
+
+	threadID string
+	runID    string
+
+	assistantMessageID string
+	textStarted        bool
+	reasoningStarted   bool
+	toolCalls          map[string]*aguiToolCallState
+}
+
+func newAGUIStreamEncoder(w http.ResponseWriter, flusher http.Flusher, threadID, runID string) *aguiStreamEncoder {
+	return &aguiStreamEncoder{
+		w:         w,
+		flusher:   flusher,
+		threadID:  threadID,
+		runID:     runID,
+		toolCalls: make(map[string]*aguiToolCallState),
+	}
+}
+
+func (e *aguiStreamEncoder) onStart(info StreamMetaInfo) error {
+	e.threadID = info.ThreadID
+	e.runID = info.RunID
+
+	return e.writeEvent(aguiRunStartedEvent{
+		Type:     "RUN_STARTED",
+		ThreadID: info.ThreadID,
+		RunID:    info.RunID,
+	})
+}
+
+func (e *aguiStreamEncoder) onChunk(chunk StreamChunk) error {
+	if len(chunk.ToolCalls) > 0 {
+		if err := e.emitToolCalls(chunk.ToolCalls); err != nil {
+			return err
+		}
+	}
+
+	if chunk.ReasoningContent != "" {
+		if err := e.ensureTextMessageStarted(); err != nil {
+			return err
+		}
+		if !e.reasoningStarted {
+			if err := e.writeEvent(aguiTextReasoningStartEvent{
+				Type:      "TEXT_MESSAGE_REASONING_START",
+				MessageID: e.assistantMessageID,
+			}); err != nil {
+				return err
+			}
+			e.reasoningStarted = true
+		}
+		if err := e.writeEvent(aguiTextReasoningDeltaEvent{
+			Type:      "TEXT_MESSAGE_REASONING_DELTA",
+			MessageID: e.assistantMessageID,
+			Delta:     chunk.ReasoningContent,
+		}); err != nil {
+			return err
+		}
+	}
+
+	if chunk.Content != "" {
+		if err := e.ensureTextMessageStarted(); err != nil {
+			return err
+		}
+		if err := e.writeEvent(aguiTextMessageDeltaEvent{
+			Type:      "TEXT_MESSAGE_DELTA",
+			MessageID: e.assistantMessageID,
+			Delta:     chunk.Content,
+		}); err != nil {
+			return err
 		}
 	}
 
 	return nil
 }
 
+func (e *aguiStreamEncoder) onDone() error {
+	if err := e.closeOpenStreams(); err != nil {
+		return err
+	}
+
+	return e.writeEvent(aguiRunFinishedEvent{
+		Type:     "RUN_FINISHED",
+		ThreadID: e.threadID,
+		RunID:    e.runID,
+	})
+}
+
+func (e *aguiStreamEncoder) onError(code, message string) error {
+	if err := e.closeOpenStreams(); err != nil {
+		return err
+	}
+
+	return e.writeEvent(aguiRunErrorEvent{
+		Type:    "RUN_ERROR",
+		Code:    code,
+		Message: message,
+	})
+}
+
+func (e *aguiStreamEncoder) closeOpenStreams() error {
+	if e.reasoningStarted {
+		if err := e.writeEvent(aguiTextReasoningEndEvent{
+			Type:      "TEXT_MESSAGE_REASONING_END",
+			MessageID: e.assistantMessageID,
+		}); err != nil {
+			return err
+		}
+		e.reasoningStarted = false
+	}
+
+	for toolCallID, state := range e.toolCalls {
+		if state == nil {
+			continue
+		}
+		if err := e.writeEvent(aguiToolCallEndEvent{
+			Type:         "TOOL_CALL_END",
+			ToolCallID:   toolCallID,
+			ToolCallName: state.toolCallName,
+			ParentMsgID:  e.assistantMessageID,
+		}); err != nil {
+			return err
+		}
+	}
+	e.toolCalls = make(map[string]*aguiToolCallState)
+
+	if e.textStarted {
+		if err := e.writeEvent(aguiTextMessageEndEvent{
+			Type:      "TEXT_MESSAGE_END",
+			MessageID: e.assistantMessageID,
+		}); err != nil {
+			return err
+		}
+		e.textStarted = false
+	}
+
+	return nil
+}
+
+func (e *aguiStreamEncoder) emitToolCalls(calls []schema.ToolCall) error {
+	if err := e.ensureTextMessageStarted(); err != nil {
+		return err
+	}
+
+	for _, call := range calls {
+		toolCallID := strings.TrimSpace(call.ID)
+		if toolCallID == "" && call.Index != nil {
+			toolCallID = fmt.Sprintf("tool_%d", *call.Index)
+		}
+		if toolCallID == "" {
+			toolCallID = "tool_" + uuid.NewString()
+		}
+
+		state, exists := e.toolCalls[toolCallID]
+		if !exists {
+			state = &aguiToolCallState{toolCallName: call.Function.Name}
+			e.toolCalls[toolCallID] = state
+			if err := e.writeEvent(aguiToolCallStartEvent{
+				Type:         "TOOL_CALL_START",
+				ToolCallID:   toolCallID,
+				ToolCallName: call.Function.Name,
+				ParentMsgID:  e.assistantMessageID,
+			}); err != nil {
+				return err
+			}
+		}
+
+		state.toolCallName = call.Function.Name
+		args := strings.TrimSpace(call.Function.Arguments)
+		if args != "" && args != state.lastArgs {
+			if err := e.writeEvent(aguiToolCallArgsEvent{
+				Type:        "TOOL_CALL_ARGS",
+				ToolCallID:  toolCallID,
+				Args:        parseToolCallArgs(args),
+				ParentMsgID: e.assistantMessageID,
+			}); err != nil {
+				return err
+			}
+			state.lastArgs = args
+		}
+	}
+
+	return nil
+}
+
+func parseToolCallArgs(args string) any {
+	var parsed any
+	if err := json.Unmarshal([]byte(args), &parsed); err == nil {
+		return parsed
+	}
+	return map[string]string{"raw": args}
+}
+
+func (e *aguiStreamEncoder) ensureTextMessageStarted() error {
+	if e.assistantMessageID == "" {
+		e.assistantMessageID = "msg_" + uuid.NewString()
+	}
+	if e.textStarted {
+		return nil
+	}
+
+	if err := e.writeEvent(aguiTextMessageStartEvent{
+		Type:      "TEXT_MESSAGE_START",
+		MessageID: e.assistantMessageID,
+		Role:      string(schema.Assistant),
+	}); err != nil {
+		return err
+	}
+
+	e.textStarted = true
+	return nil
+}
+
+func (e *aguiStreamEncoder) writeEvent(event any) error {
+	data, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(e.w, "data: %s\n\n", data); err != nil {
+		return err
+	}
+	e.flusher.Flush()
+	return nil
+}
+
+type aguiRunStartedEvent struct {
+	Type     string `json:"type"`
+	ThreadID string `json:"threadId"`
+	RunID    string `json:"runId"`
+}
+
+type aguiRunFinishedEvent struct {
+	Type     string `json:"type"`
+	ThreadID string `json:"threadId"`
+	RunID    string `json:"runId"`
+}
+
+type aguiRunErrorEvent struct {
+	Type    string `json:"type"`
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message"`
+}
+
+type aguiTextMessageStartEvent struct {
+	Type      string `json:"type"`
+	MessageID string `json:"messageId"`
+	Role      string `json:"role"`
+}
+
+type aguiTextMessageDeltaEvent struct {
+	Type      string `json:"type"`
+	MessageID string `json:"messageId"`
+	Delta     string `json:"delta"`
+}
+
+type aguiTextMessageEndEvent struct {
+	Type      string `json:"type"`
+	MessageID string `json:"messageId"`
+}
+
+type aguiTextReasoningStartEvent struct {
+	Type      string `json:"type"`
+	MessageID string `json:"messageId"`
+}
+
+type aguiTextReasoningDeltaEvent struct {
+	Type      string `json:"type"`
+	MessageID string `json:"messageId"`
+	Delta     string `json:"delta"`
+}
+
+type aguiTextReasoningEndEvent struct {
+	Type      string `json:"type"`
+	MessageID string `json:"messageId"`
+}
+
+type aguiToolCallStartEvent struct {
+	Type         string `json:"type"`
+	ToolCallID   string `json:"toolCallId"`
+	ToolCallName string `json:"toolCallName,omitempty"`
+	ParentMsgID  string `json:"parentMessageId,omitempty"`
+}
+
+type aguiToolCallArgsEvent struct {
+	Type        string `json:"type"`
+	ToolCallID  string `json:"toolCallId"`
+	Args        any    `json:"args"`
+	ParentMsgID string `json:"parentMessageId,omitempty"`
+}
+
+type aguiToolCallEndEvent struct {
+	Type         string `json:"type"`
+	ToolCallID   string `json:"toolCallId"`
+	ToolCallName string `json:"toolCallName,omitempty"`
+	ParentMsgID  string `json:"parentMessageId,omitempty"`
+}
+
 func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(data)
+	_ = json.NewEncoder(w).Encode(data)
 }
 
 // listSessions 获取会话列表
@@ -155,7 +512,7 @@ func (h *ChatHandler) listSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ListSessionsResponse{Sessions: sessions})
 }
 
-// getSession 获取会话详情
+// getSession 获取会话详情（支持 session_id 或 tree_id）
 func (h *ChatHandler) getSession(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	sessionID := vars["id"]

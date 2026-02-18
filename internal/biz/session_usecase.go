@@ -29,6 +29,22 @@ func (uc *SessionUsecase) ResolveSession(sessionID string) (treeID, resolvedID s
 	return treeID, resolvedID, false, nil
 }
 
+// ResolveThread validates or creates a thread.
+// Returns the thread ID(tree_id), resolved session ID, and whether a new conversation was created.
+func (uc *SessionUsecase) ResolveThread(threadID string) (resolvedThreadID, sessionID string, isNew bool, err error) {
+	if threadID == "" {
+		resolvedThreadID, sessionID = uc.repo.NewConversation()
+		return resolvedThreadID, sessionID, true, nil
+	}
+
+	sessionID, err = uc.repo.GetLastActiveSessionID(threadID)
+	if err != nil {
+		return "", "", false, err
+	}
+
+	return threadID, sessionID, false, nil
+}
+
 // AppendMessage appends a message to the session.
 func (uc *SessionUsecase) AppendMessage(sessionID string, msg *schema.Message, model string) (int64, error) {
 	return uc.repo.AppendMessage(sessionID, msg, model)

@@ -45,7 +45,7 @@ func (uc *ChatUsecase) createAgent(ctx context.Context, modelName string) (*adk.
 type ChatRequest struct {
 	schema.Message
 	Model    string `json:"model,omitempty"`
-	Session  string `json:"session"`
+	ThreadID string `json:"thread_id,omitempty"`
 	Thinking *bool  `json:"thinking,omitempty"`
 }
 
@@ -133,6 +133,7 @@ type StreamChunk struct {
 	Content                  string                     `json:"content,omitempty"`
 	ReasoningContent         string                     `json:"reasoning_content,omitempty"`
 	AssistantGenMultiContent []schema.MessageOutputPart `json:"assistant_gen_multi_content,omitempty"`
+	ToolCalls                []schema.ToolCall          `json:"tool_calls,omitempty"`
 }
 
 // StreamChunkCallback 流数据回调
@@ -165,6 +166,7 @@ func (uc *ChatUsecase) ChatStream(
 	var fullContent strings.Builder
 	var fullReasoning strings.Builder
 	var multiContent []schema.MessageOutputPart
+	var toolCalls []schema.ToolCall
 
 	for {
 		event, ok := iter.Next()
@@ -180,7 +182,7 @@ func (uc *ChatUsecase) ChatStream(
 
 		mv := event.Output.MessageOutput
 		if mv.IsStreaming {
-			if err := consumeStream(mv.MessageStream, &fullContent, &fullReasoning, &multiContent, onChunk); err != nil {
+			if err := consumeStream(mv.MessageStream, &fullContent, &fullReasoning, &multiContent, &toolCalls, onChunk); err != nil {
 				return nil, "", err
 			}
 		} else if mv.Message != nil {
@@ -188,6 +190,7 @@ func (uc *ChatUsecase) ChatStream(
 				Content:                  mv.Message.Content,
 				ReasoningContent:         mv.Message.ReasoningContent,
 				AssistantGenMultiContent: mv.Message.AssistantGenMultiContent,
+				ToolCalls:                mv.Message.ToolCalls,
 			}
 
 			if mv.Message.ReasoningContent != "" {
@@ -199,8 +202,11 @@ func (uc *ChatUsecase) ChatStream(
 			if len(mv.Message.AssistantGenMultiContent) > 0 {
 				multiContent = append(multiContent, mv.Message.AssistantGenMultiContent...)
 			}
+			if len(mv.Message.ToolCalls) > 0 {
+				toolCalls = mergeToolCalls(toolCalls, mv.Message.ToolCalls)
+			}
 
-			if streamChunk.Content != "" || streamChunk.ReasoningContent != "" || len(streamChunk.AssistantGenMultiContent) > 0 {
+			if streamChunk.Content != "" || streamChunk.ReasoningContent != "" || len(streamChunk.AssistantGenMultiContent) > 0 || len(streamChunk.ToolCalls) > 0 {
 				if cbErr := onChunk(streamChunk); cbErr != nil {
 					return nil, "", cbErr
 				}
@@ -213,6 +219,7 @@ func (uc *ChatUsecase) ChatStream(
 		Content:                  fullContent.String(),
 		ReasoningContent:         fullReasoning.String(),
 		AssistantGenMultiContent: multiContent,
+		ToolCalls:                toolCalls,
 	}
 	return assistantMsg, modelName, nil
 }
@@ -223,6 +230,7 @@ func consumeStream(
 	stream *schema.StreamReader[*schema.Message],
 	fullContent, fullReasoning *strings.Builder,
 	multiContent *[]schema.MessageOutputPart,
+	toolCalls *[]schema.ToolCall,
 	onChunk StreamChunkCallback,
 ) error {
 	defer stream.Close()
@@ -239,6 +247,7 @@ func consumeStream(
 			Content:                  chunk.Content,
 			ReasoningContent:         chunk.ReasoningContent,
 			AssistantGenMultiContent: chunk.AssistantGenMultiContent,
+			ToolCalls:                chunk.ToolCalls,
 		}
 
 		if chunk.ReasoningContent != "" {
@@ -250,13 +259,94 @@ func consumeStream(
 		if len(chunk.AssistantGenMultiContent) > 0 {
 			*multiContent = append(*multiContent, chunk.AssistantGenMultiContent...)
 		}
+		if len(chunk.ToolCalls) > 0 {
+			*toolCalls = mergeToolCalls(*toolCalls, chunk.ToolCalls)
+		}
 
-		if sc.Content != "" || sc.ReasoningContent != "" || len(sc.AssistantGenMultiContent) > 0 {
+		if sc.Content != "" || sc.ReasoningContent != "" || len(sc.AssistantGenMultiContent) > 0 || len(sc.ToolCalls) > 0 {
 			if cbErr := onChunk(sc); cbErr != nil {
 				return cbErr
 			}
 		}
 	}
+}
+
+// mergeToolCalls merges streamed tool call chunks into stable tool call entries.
+func mergeToolCalls(existing, incoming []schema.ToolCall) []schema.ToolCall {
+	if len(incoming) == 0 {
+		return existing
+	}
+
+	result := append([]schema.ToolCall(nil), existing...)
+	idIndex := make(map[string]int, len(result))
+	indexIndex := make(map[int]int, len(result))
+	for i, call := range result {
+		if call.ID != "" {
+			idIndex[call.ID] = i
+		}
+		if call.Index != nil {
+			indexIndex[*call.Index] = i
+		}
+	}
+
+	for _, chunk := range incoming {
+		target := -1
+		if chunk.ID != "" {
+			if idx, ok := idIndex[chunk.ID]; ok {
+				target = idx
+			}
+		}
+		if target < 0 && chunk.Index != nil {
+			if idx, ok := indexIndex[*chunk.Index]; ok {
+				target = idx
+			}
+		}
+
+		if target < 0 {
+			result = append(result, chunk)
+			newIdx := len(result) - 1
+			if chunk.ID != "" {
+				idIndex[chunk.ID] = newIdx
+			}
+			if chunk.Index != nil {
+				indexIndex[*chunk.Index] = newIdx
+			}
+			continue
+		}
+
+		current := result[target]
+		if chunk.ID != "" {
+			current.ID = chunk.ID
+		}
+		if chunk.Type != "" {
+			current.Type = chunk.Type
+		}
+		if chunk.Index != nil {
+			current.Index = chunk.Index
+		}
+		if chunk.Function.Name != "" {
+			current.Function.Name = chunk.Function.Name
+		}
+		if chunk.Function.Arguments != "" {
+			if current.Function.Arguments == "" || strings.HasPrefix(chunk.Function.Arguments, current.Function.Arguments) {
+				current.Function.Arguments = chunk.Function.Arguments
+			} else {
+				current.Function.Arguments += chunk.Function.Arguments
+			}
+		}
+		if len(chunk.Extra) > 0 {
+			if current.Extra == nil {
+				current.Extra = map[string]any{}
+			}
+			for k, v := range chunk.Extra {
+				current.Extra[k] = v
+			}
+		}
+
+		result[target] = current
+	}
+
+	return result
 }
 
 func parseRole(role string) schema.RoleType {
