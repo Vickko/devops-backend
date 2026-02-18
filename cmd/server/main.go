@@ -71,9 +71,10 @@ func main() {
 	}
 
 	// biz 层
-	chatUsecase := biz.NewChatUsecase(sessionRepo, clientFactory, cfg.Eino)
+	sessionUsecase := biz.NewSessionUsecase(sessionRepo)
+	chatUsecase := biz.NewChatUsecase(clientFactory, cfg.Eino)
 	// service 层
-	chatService := service.NewChatService(chatUsecase)
+	chatService := service.NewChatService(chatUsecase, sessionUsecase)
 	// api 层
 	chatHandler := api.NewChatHandler(chatService)
 	router := api.NewRouter(chatHandler, authHandler, authMiddleware)

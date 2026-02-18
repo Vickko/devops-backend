@@ -18,7 +18,9 @@ type ChatRequest struct {
 // ChatResponse 聊天响应 DTO
 type ChatResponse struct {
 	schema.Message
-	Model string `json:"model,omitempty"`
+	Model     string `json:"model,omitempty"`
+	SessionID string `json:"session,omitempty"`
+	TreeID    string `json:"tree_id,omitempty"`
 }
 
 // StreamChunk 流式响应块

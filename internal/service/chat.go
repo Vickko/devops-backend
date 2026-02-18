@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 
 	"devops-backend/internal/api"
 	"devops-backend/internal/biz"
@@ -9,19 +10,20 @@ import (
 
 // chatService 聊天服务实现
 type chatService struct {
-	chatUsecase *biz.ChatUsecase
+	chatUsecase    *biz.ChatUsecase
+	sessionUsecase *biz.SessionUsecase
 }
 
-// NewChatService 创建 ChatService
-func NewChatService(chatUsecase *biz.ChatUsecase) api.ChatService {
+// NewChatService creates a ChatService.
+func NewChatService(chat *biz.ChatUsecase, session *biz.SessionUsecase) api.ChatService {
 	return &chatService{
-		chatUsecase: chatUsecase,
+		chatUsecase:    chat,
+		sessionUsecase: session,
 	}
 }
 
 // Chat 执行聊天，进行 DTO 转换
 func (s *chatService) Chat(ctx context.Context, req *api.ChatRequest) (*api.ChatResponse, error) {
-	// api DTO -> biz request
 	bizReq := &biz.ChatRequest{
 		Message:  req.Message,
 		Model:    req.Model,
@@ -29,16 +31,35 @@ func (s *chatService) Chat(ctx context.Context, req *api.ChatRequest) (*api.Chat
 		Thinking: req.Thinking,
 	}
 
-	// 调用业务层
-	bizResp, err := s.chatUsecase.Chat(ctx, bizReq)
+	treeID, sessionID, _, err := s.sessionUsecase.ResolveSession(bizReq.Session)
+	if err != nil {
+		return nil, fmt.Errorf("resolve session: %w", err)
+	}
+
+	userMsg := biz.BuildUserMessage(bizReq)
+	if _, err := s.sessionUsecase.AppendMessage(sessionID, userMsg, ""); err != nil {
+		return nil, fmt.Errorf("append user message: %w", err)
+	}
+
+	messages, err := s.sessionUsecase.GetHistory(sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("get session history: %w", err)
+	}
+
+	result, modelName, err := s.chatUsecase.Chat(ctx, messages, bizReq.Model, bizReq.Thinking)
 	if err != nil {
 		return nil, err
 	}
 
-	// biz response -> api DTO
+	if _, err := s.sessionUsecase.AppendMessage(sessionID, result, modelName); err != nil {
+		return nil, fmt.Errorf("append assistant message: %w", err)
+	}
+
 	return &api.ChatResponse{
-		Message: bizResp.Message,
-		Model:   bizResp.Model,
+		Message:   *result,
+		Model:     modelName,
+		SessionID: sessionID,
+		TreeID:    treeID,
 	}, nil
 }
 
@@ -49,7 +70,6 @@ func (s *chatService) ChatStream(
 	onStart api.StreamStartCallback,
 	onChunk api.StreamChunkCallback,
 ) error {
-	// api DTO -> biz request
 	bizReq := &biz.ChatRequest{
 		Message:  req.Message,
 		Model:    req.Model,
@@ -57,35 +77,56 @@ func (s *chatService) ChatStream(
 		Thinking: req.Thinking,
 	}
 
-	// 调用业务层流式方法，转换回调类型
-	return s.chatUsecase.ChatStream(ctx, bizReq,
-		// onStart 回调适配类型：biz.StreamMetaInfo -> api.StreamMetaInfo
-		func(info biz.StreamMetaInfo) error {
-			return onStart(api.StreamMetaInfo{
-				TreeID:    info.TreeID,
-				SessionID: info.SessionID,
-				IsNew:     info.IsNew,
-			})
-		},
-		// onChunk 回调转换类型
-		func(chunk biz.StreamChunk) error {
-			return onChunk(api.StreamChunk{
-				Content:                  chunk.Content,
-				ReasoningContent:         chunk.ReasoningContent,
-				AssistantGenMultiContent: chunk.AssistantGenMultiContent,
-			})
-		},
-	)
+	treeID, sessionID, isNew, err := s.sessionUsecase.ResolveSession(bizReq.Session)
+	if err != nil {
+		return fmt.Errorf("resolve session: %w", err)
+	}
+
+	if err := onStart(api.StreamMetaInfo{
+		TreeID:    treeID,
+		SessionID: sessionID,
+		IsNew:     isNew,
+	}); err != nil {
+		return err
+	}
+
+	userMsg := biz.BuildUserMessage(bizReq)
+	if _, err := s.sessionUsecase.AppendMessage(sessionID, userMsg, ""); err != nil {
+		return fmt.Errorf("append user message: %w", err)
+	}
+
+	messages, err := s.sessionUsecase.GetHistory(sessionID)
+	if err != nil {
+		return fmt.Errorf("get session history: %w", err)
+	}
+
+	bizChunkAdapter := func(chunk biz.StreamChunk) error {
+		return onChunk(api.StreamChunk{
+			Content:                  chunk.Content,
+			ReasoningContent:         chunk.ReasoningContent,
+			AssistantGenMultiContent: chunk.AssistantGenMultiContent,
+		})
+	}
+
+	assistantMsg, modelName, err := s.chatUsecase.ChatStream(ctx, messages, bizReq.Model, bizReq.Thinking, bizChunkAdapter)
+	if err != nil {
+		return err
+	}
+
+	if _, err := s.sessionUsecase.AppendMessage(sessionID, assistantMsg, modelName); err != nil {
+		return fmt.Errorf("append assistant message: %w", err)
+	}
+
+	return nil
 }
 
 // ListSessions 列出所有会话树
 func (s *chatService) ListSessions(ctx context.Context) ([]api.SessionInfo, error) {
-	trees, err := s.chatUsecase.ListSessions()
+	trees, err := s.sessionUsecase.ListSessions()
 	if err != nil {
 		return nil, err
 	}
 
-	// biz -> api DTO 转换
 	result := make([]api.SessionInfo, len(trees))
 	for i, tree := range trees {
 		result[i] = api.SessionInfo{
@@ -102,12 +143,11 @@ func (s *chatService) ListSessions(ctx context.Context) ([]api.SessionInfo, erro
 
 // GetSession 获取会话详情
 func (s *chatService) GetSession(ctx context.Context, sessionID string) (*api.GetSessionResponse, error) {
-	session, err := s.chatUsecase.GetSession(sessionID)
+	session, err := s.sessionUsecase.GetSession(sessionID)
 	if err != nil {
 		return nil, err
 	}
 
-	// biz.Session ([]*biz.ChatResponse) -> []*api.ChatResponse
 	messages := make([]*api.ChatResponse, len(session))
 	for i, msg := range session {
 		messages[i] = &api.ChatResponse{

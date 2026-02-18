@@ -13,17 +13,15 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
-// ChatUsecase 聊天业务逻辑
+// ChatUsecase handles AI chat execution (agent creation, inference, streaming).
 type ChatUsecase struct {
-	sessionRepo  SessionRepo
 	provider     ChatModelProvider
 	defaultModel string
 }
 
-// NewChatUsecase 创建 ChatUsecase
-func NewChatUsecase(sessionRepo SessionRepo, provider ChatModelProvider, cfg conf.Eino) *ChatUsecase {
+// NewChatUsecase creates a ChatUsecase.
+func NewChatUsecase(provider ChatModelProvider, cfg conf.Eino) *ChatUsecase {
 	return &ChatUsecase{
-		sessionRepo:  sessionRepo,
 		provider:     provider,
 		defaultModel: cfg.DefaultModel,
 	}
@@ -57,10 +55,9 @@ type ChatResponse struct {
 	Model string `json:"model,omitempty"`
 }
 
-// Chat 执行聊天
-func (uc *ChatUsecase) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
-	// 构建用户消息
-	userMsg := &schema.Message{
+// BuildUserMessage constructs a schema.Message from the request.
+func BuildUserMessage(req *ChatRequest) *schema.Message {
+	return &schema.Message{
 		Role:                     parseRole(string(req.Role)),
 		Content:                  req.Content,
 		Name:                     req.Name,
@@ -72,42 +69,38 @@ func (uc *ChatUsecase) Chat(ctx context.Context, req *ChatRequest) (*ChatRespons
 		ReasoningContent:         req.ReasoningContent,
 		Extra:                    req.Extra,
 	}
+}
 
-	// 追加用户消息到会话
-	if _, err := uc.sessionRepo.AppendMessage(req.Session, userMsg, ""); err != nil {
-		return nil, wrapError("append user message", err)
+// resolveModel returns the requested model or falls back to the default.
+func (uc *ChatUsecase) resolveModel(reqModel string) string {
+	if reqModel == "" {
+		return uc.defaultModel
 	}
+	return reqModel
+}
 
-	// 获取会话消息列表（包含刚追加的用户消息）
-	session := uc.sessionRepo.GetSessionMessages(req.Session)
-	if session == nil {
-		return nil, wrapError("get session", ErrSessionNotFound)
-	}
-
-	// 构建消息列表
-	messages := extractMessages(session)
-
-	// 确定使用的模型
-	modelName := req.Model
-	if modelName == "" {
-		modelName = uc.defaultModel
-	}
+// Chat executes a non-streaming chat. It returns the assistant response and the actual model name.
+func (uc *ChatUsecase) Chat(
+	ctx context.Context,
+	messages []*schema.Message,
+	reqModel string,
+	thinking *bool,
+) (*schema.Message, string, error) {
+	modelName := uc.resolveModel(reqModel)
 
 	agent, err := uc.createAgent(ctx, modelName)
 	if err != nil {
-		return nil, wrapError("create agent", err)
+		return nil, "", wrapError("create agent", err)
 	}
 
-	// 运行 agent（非流式）
 	thinkingOpts := WithParams(&RequestParams{
-		Thinking: req.Thinking,
+		Thinking: thinking,
 	})
 	iter := agent.Run(ctx, &adk.AgentInput{
-		Messages:       messages,
+		Messages:        messages,
 		EnableStreaming: false,
 	}, adk.WithChatModelOptions([]model.Option{thinkingOpts}))
 
-	// 收集结果
 	var result *schema.Message
 	for {
 		event, ok := iter.Next()
@@ -115,12 +108,12 @@ func (uc *ChatUsecase) Chat(ctx context.Context, req *ChatRequest) (*ChatRespons
 			break
 		}
 		if event.Err != nil {
-			return nil, wrapError("agent run", event.Err)
+			return nil, "", wrapError("agent run", event.Err)
 		}
 		if event.Output != nil && event.Output.MessageOutput != nil {
 			msg, err := event.Output.MessageOutput.GetMessage()
 			if err != nil {
-				return nil, wrapError("get message", err)
+				return nil, "", wrapError("get message", err)
 			}
 			if msg != nil {
 				result = msg
@@ -129,15 +122,10 @@ func (uc *ChatUsecase) Chat(ctx context.Context, req *ChatRequest) (*ChatRespons
 	}
 
 	if result == nil {
-		return nil, wrapError("agent run", fmt.Errorf("no response from agent"))
+		return nil, "", wrapError("agent run", fmt.Errorf("no response from agent"))
 	}
 
-	// 追加助手回复到会话历史
-	if _, err := uc.sessionRepo.AppendMessage(req.Session, result, modelName); err != nil {
-		return nil, wrapError("append assistant message", err)
-	}
-
-	return &ChatResponse{Message: *result, Model: modelName}, nil
+	return result, modelName, nil
 }
 
 // StreamChunk 流式响应块，区分思考内容和最终内容
@@ -147,95 +135,29 @@ type StreamChunk struct {
 	AssistantGenMultiContent []schema.MessageOutputPart `json:"assistant_gen_multi_content,omitempty"`
 }
 
-// StreamMetaInfo 流开始时的元信息
-type StreamMetaInfo struct {
-	TreeID    string
-	SessionID string
-	IsNew     bool
-}
-
-// StreamStartCallback 流开始时的回调，传递元信息
-type StreamStartCallback func(info StreamMetaInfo) error
-
 // StreamChunkCallback 流数据回调
 type StreamChunkCallback func(chunk StreamChunk) error
 
-// ChatStream 执行流式聊天
-// onStart: 流开始前回调，传递 session 信息
-// onChunk: 流数据回调
+// ChatStream executes a streaming chat. It returns the complete assistant response and the actual model name.
 func (uc *ChatUsecase) ChatStream(
 	ctx context.Context,
-	req *ChatRequest,
-	onStart StreamStartCallback,
+	messages []*schema.Message,
+	reqModel string,
+	thinking *bool,
 	onChunk StreamChunkCallback,
-) error {
-	// 1. session 验证/创建
-	var treeID, sessionID string
-	isNew := false
+) (*schema.Message, string, error) {
+	modelName := uc.resolveModel(reqModel)
 
-	if req.Session == "" {
-		treeID, sessionID = uc.sessionRepo.NewConversation()
-		isNew = true
-	} else {
-		sessionID = req.Session
-		var err error
-		treeID, err = uc.sessionRepo.GetTreeID(sessionID)
-		if err != nil {
-			return fmt.Errorf("session not found: %s", sessionID)
-		}
-	}
-
-	// 2. 通知调用者 session 信息（在流开始之前）
-	if err := onStart(StreamMetaInfo{TreeID: treeID, SessionID: sessionID, IsNew: isNew}); err != nil {
-		return err
-	}
-
-	// 3. 构建用户消息
-	userMsg := &schema.Message{
-		Role:                     parseRole(string(req.Role)),
-		Content:                  req.Content,
-		Name:                     req.Name,
-		UserInputMultiContent:    req.UserInputMultiContent,
-		AssistantGenMultiContent: req.AssistantGenMultiContent,
-		ToolCalls:                req.ToolCalls,
-		ToolCallID:               req.ToolCallID,
-		ToolName:                 req.ToolName,
-		ReasoningContent:         req.ReasoningContent,
-		Extra:                    req.Extra,
-	}
-
-	// 追加用户消息到会话
-	if _, err := uc.sessionRepo.AppendMessage(sessionID, userMsg, ""); err != nil {
-		return wrapError("append user message", err)
-	}
-
-	// 获取会话消息列表（包含刚追加的用户消息）
-	session := uc.sessionRepo.GetSessionMessages(sessionID)
-	if session == nil {
-		return wrapError("get session", ErrSessionNotFound)
-	}
-
-	// 构建消息列表（instruction 已在 agent config 中，无需手动添加系统提示）
-	messages := extractMessages(session)
-
-	// 确定使用的模型
-	modelName := req.Model
-	if modelName == "" {
-		modelName = uc.defaultModel
-	}
-
-	// 创建 agent
 	agent, err := uc.createAgent(ctx, modelName)
 	if err != nil {
-		return wrapError("create agent", err)
+		return nil, "", wrapError("create agent", err)
 	}
 
-	// 运行 agent（流式）
 	thinkingOpts := WithParams(&RequestParams{
-		Thinking: req.Thinking,
+		Thinking: thinking,
 	})
 	iter := agent.Run(ctx, &adk.AgentInput{
-		Messages:       messages,
+		Messages:        messages,
 		EnableStreaming: true,
 	}, adk.WithChatModelOptions([]model.Option{thinkingOpts}))
 
@@ -244,14 +166,13 @@ func (uc *ChatUsecase) ChatStream(
 	var fullReasoning strings.Builder
 	var multiContent []schema.MessageOutputPart
 
-	// 遍历事件
 	for {
 		event, ok := iter.Next()
 		if !ok {
 			break
 		}
 		if event.Err != nil {
-			return wrapError("agent run", event.Err)
+			return nil, "", wrapError("agent run", event.Err)
 		}
 		if event.Output == nil || event.Output.MessageOutput == nil {
 			continue
@@ -260,10 +181,9 @@ func (uc *ChatUsecase) ChatStream(
 		mv := event.Output.MessageOutput
 		if mv.IsStreaming {
 			if err := consumeStream(mv.MessageStream, &fullContent, &fullReasoning, &multiContent, onChunk); err != nil {
-				return err
+				return nil, "", err
 			}
 		} else if mv.Message != nil {
-			// 非流式：直接从 Message 提取
 			streamChunk := StreamChunk{
 				Content:                  mv.Message.Content,
 				ReasoningContent:         mv.Message.ReasoningContent,
@@ -282,24 +202,19 @@ func (uc *ChatUsecase) ChatStream(
 
 			if streamChunk.Content != "" || streamChunk.ReasoningContent != "" || len(streamChunk.AssistantGenMultiContent) > 0 {
 				if cbErr := onChunk(streamChunk); cbErr != nil {
-					return cbErr
+					return nil, "", cbErr
 				}
 			}
 		}
 	}
 
-	// 追加助手回复到会话历史
 	assistantMsg := &schema.Message{
 		Role:                     schema.Assistant,
 		Content:                  fullContent.String(),
 		ReasoningContent:         fullReasoning.String(),
 		AssistantGenMultiContent: multiContent,
 	}
-	if _, err := uc.sessionRepo.AppendMessage(sessionID, assistantMsg, modelName); err != nil {
-		return wrapError("append assistant message", err)
-	}
-
-	return nil
+	return assistantMsg, modelName, nil
 }
 
 // consumeStream reads all frames from a MessageStream, accumulates content, and calls onChunk.
@@ -357,16 +272,7 @@ func parseRole(role string) schema.RoleType {
 	}
 }
 
-// extractMessages 从 Session 中提取 schema.Message 列表
-func extractMessages(session Session) []*schema.Message {
-	msgs := make([]*schema.Message, len(session))
-	for i, cr := range session {
-		msgs[i] = &cr.Message
-	}
-	return msgs
-}
-
-// wrapError 包装错误信息
+// wrapError wraps an error with an operation context.
 func wrapError(op string, err error) error {
 	return &chatError{op: op, err: err}
 }
@@ -382,18 +288,4 @@ func (e *chatError) Error() string {
 
 func (e *chatError) Unwrap() error {
 	return e.err
-}
-
-// ListSessions 列出所有会话树
-func (uc *ChatUsecase) ListSessions() ([]SessionTreeInfo, error) {
-	return uc.sessionRepo.ListTrees()
-}
-
-// GetSession 获取会话消息列表
-func (uc *ChatUsecase) GetSession(sessionID string) (Session, error) {
-	session := uc.sessionRepo.GetSessionMessages(sessionID)
-	if session == nil {
-		return nil, ErrSessionNotFound
-	}
-	return session, nil
 }
