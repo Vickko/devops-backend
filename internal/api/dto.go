@@ -29,7 +29,7 @@ type RunAgentInputMessage struct {
 	ToolCalls  []schema.ToolCall `json:"toolCalls,omitempty"`
 }
 
-// RunAgentInputContentPart AG-UI 消息内容分片（当前仅解析 text）
+// RunAgentInputContentPart AG-UI 消息内容分片（支持 text + binary(image)）
 type RunAgentInputContentPart struct {
 	Type     string `json:"type"`
 	Text     string `json:"text,omitempty"`

@@ -49,7 +49,7 @@ eino:
 
 # Authentication configuration
 auth:
-  enabled: true  # ✅ OIDC enabled with PKCE
+  enabled: false  # ✅ OIDC enabled with PKCE
 
   # Zitadel Configuration (PKCE mode)
   provider: "http://localhost:8080"
