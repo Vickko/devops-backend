@@ -3,6 +3,7 @@ package provider
 import (
 	"encoding/json"
 	"os"
+	"strings"
 	"sync"
 )
 
@@ -83,7 +84,22 @@ func (r *ModelCapabilityRegistry) loadFromConfig(configPath string) {
 func (r *ModelCapabilityRegistry) GetCapabilities(name string) *ModelCapabilities {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.capabilities[name]
+
+	if caps, ok := r.capabilities[name]; ok {
+		return caps
+	}
+
+	lowerName := strings.ToLower(strings.TrimSpace(name))
+	if lowerName == "" {
+		return nil
+	}
+	for key, caps := range r.capabilities {
+		if strings.Contains(lowerName, strings.ToLower(key)) {
+			return caps
+		}
+	}
+
+	return nil
 }
 
 func (r *ModelCapabilityRegistry) SupportsModality(name string, modality ModalityType) bool {

@@ -76,6 +76,85 @@ func TestParseRunAgentContent_SuccessDataURL(t *testing.T) {
 	}
 }
 
+func TestParseRunAgentMessage_TextOnlyPartsUseContent(t *testing.T) {
+	msg, err := parseRunAgentMessage(RunAgentInputMessage{
+		Role: "user",
+		Content: mustMarshalJSON(t, []RunAgentInputContentPart{
+			{Type: "text", Text: "hello "},
+			{Type: "text", Text: "world"},
+		}),
+	})
+	if err != nil {
+		t.Fatalf("parseRunAgentMessage returned error: %v", err)
+	}
+	if msg.Content != "hello world" {
+		t.Fatalf("unexpected content: %q", msg.Content)
+	}
+	if len(msg.UserInputMultiContent) != 0 {
+		t.Fatalf("expected empty multi content, got: %d", len(msg.UserInputMultiContent))
+	}
+}
+
+func TestParseRunAgentMessage_MixedPartsUseMultiContentAndKeepContent(t *testing.T) {
+	msg, err := parseRunAgentMessage(RunAgentInputMessage{
+		Role: "user",
+		Content: mustMarshalJSON(t, []RunAgentInputContentPart{
+			{Type: "text", Text: "describe"},
+			{Type: "binary", MimeType: "image/png", Data: "aGVsbG8="},
+		}),
+	})
+	if err != nil {
+		t.Fatalf("parseRunAgentMessage returned error: %v", err)
+	}
+	if msg.Content != "describe" {
+		t.Fatalf("expected content to be kept for conversation title, got: %q", msg.Content)
+	}
+	if len(msg.UserInputMultiContent) != 2 {
+		t.Fatalf("unexpected multi content length: %d", len(msg.UserInputMultiContent))
+	}
+}
+
+func TestBuildChatRequestFromRunInput_ModelImageUnsupported(t *testing.T) {
+	_, err := buildChatRequestFromRunInput(&RunAgentInput{
+		Messages: []RunAgentInputMessage{
+			{
+				Role: "user",
+				Content: mustMarshalJSON(t, []RunAgentInputContentPart{
+					{Type: "text", Text: "describe"},
+					{Type: "binary", MimeType: "image/png", Data: "aGVsbG8="},
+				}),
+			},
+		},
+		ForwardedProps: map[string]any{
+			"model": "deepseek-v3.2",
+		},
+	})
+	assertChatInputErrorCode(t, err, chatErrCodeModelImageUnsupported)
+}
+
+func TestBuildChatRequestFromRunInput_ModelImageSupported(t *testing.T) {
+	req, err := buildChatRequestFromRunInput(&RunAgentInput{
+		Messages: []RunAgentInputMessage{
+			{
+				Role: "user",
+				Content: mustMarshalJSON(t, []RunAgentInputContentPart{
+					{Type: "text", Text: "describe"},
+					{Type: "binary", MimeType: "image/png", Data: "aGVsbG8="},
+				}),
+			},
+		},
+		ForwardedProps: map[string]any{
+			"model": "gemini-2.5-flash-image",
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildChatRequestFromRunInput returned error: %v", err)
+	}
+	if req == nil {
+		t.Fatal("expected non-nil request")
+	}
+}
+
 func TestParseRunAgentContent_ErrorCodes(t *testing.T) {
 	oversizedData := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("a"), maxInputBinaryBytes+1))
 	totalPartData := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("a"), 4*1024*1024))

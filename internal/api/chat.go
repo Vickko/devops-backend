@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"strings"
 
+	"devops-backend/internal/data/provider"
+
 	"github.com/cloudwego/eino/schema"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
@@ -31,6 +33,7 @@ const (
 	chatErrCodeBinaryPartTooLarge    = "binary_part_too_large"
 	chatErrCodeBinaryTotalTooLarge   = "binary_total_too_large"
 	chatErrCodeBinaryPartTooMany     = "binary_part_too_many"
+	chatErrCodeModelImageUnsupported = "model_image_unsupported"
 )
 
 var allowedInputImageMIMETypes = map[string]struct{}{
@@ -178,6 +181,9 @@ func buildChatRequestFromRunInput(input *RunAgentInput) (*ChatRequest, error) {
 	}
 
 	model, thinking := parseForwardedProps(input.ForwardedProps)
+	if err := validateModelInputCapabilities(msg, model); err != nil {
+		return nil, err
+	}
 	runID := strings.TrimSpace(input.RunID)
 	if runID == "" {
 		runID = "run_" + uuid.NewString()
@@ -197,17 +203,33 @@ func parseRunAgentMessage(msg RunAgentInputMessage) (*schema.Message, error) {
 	if err != nil {
 		return nil, err
 	}
+	role := parseRunAgentRole(msg.Role)
 	message := &schema.Message{
-		Role:       parseRunAgentRole(msg.Role),
+		Role:       role,
 		Content:    content,
 		Name:       msg.Name,
 		ToolCallID: msg.ToolCallID,
 		ToolCalls:  msg.ToolCalls,
 	}
 	if len(parts) > 0 {
+		if role != schema.User || !hasNonTextInputPart(parts) {
+			// 纯文本分片保留到 Content，避免同时携带 Content + MultiContent。
+			return message, nil
+		}
+		// 对用户图文混合输入，保留 Content 供会话标题/摘要使用；
+		// 在真正调用模型前会在 biz.prepareMessagesForModel 再清理为多模态输入格式。
 		message.UserInputMultiContent = parts
 	}
 	return message, nil
+}
+
+func hasNonTextInputPart(parts []schema.MessageInputPart) bool {
+	for _, part := range parts {
+		if part.Type != schema.ChatMessagePartTypeText {
+			return true
+		}
+	}
+	return false
 }
 
 func parseRunAgentRole(role string) schema.RoleType {
@@ -334,6 +356,34 @@ func normalizeBinaryPart(part RunAgentInputContentPart) (base64Data string, mime
 	}
 
 	return raw, mimeType, nil
+}
+
+func validateModelInputCapabilities(msg *schema.Message, modelName string) error {
+	if msg == nil {
+		return nil
+	}
+	if strings.TrimSpace(modelName) == "" {
+		return nil
+	}
+	if !hasImageInputPart(msg.UserInputMultiContent) {
+		return nil
+	}
+	if provider.GetModelCapabilityRegistry().SupportsModality(modelName, provider.ModalityImage) {
+		return nil
+	}
+	return newChatInputError(
+		chatErrCodeModelImageUnsupported,
+		fmt.Sprintf("model %s does not support image input", modelName),
+	)
+}
+
+func hasImageInputPart(parts []schema.MessageInputPart) bool {
+	for _, part := range parts {
+		if part.Type == schema.ChatMessagePartTypeImageURL {
+			return true
+		}
+	}
+	return false
 }
 
 func decodeBase64Size(data string, limit int) (decodedSize int, tooLarge bool, err error) {

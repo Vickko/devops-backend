@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 
 	"devops-backend/internal/conf"
@@ -57,7 +58,7 @@ type ChatResponse struct {
 
 // BuildUserMessage constructs a schema.Message from the request.
 func BuildUserMessage(req *ChatRequest) *schema.Message {
-	return &schema.Message{
+	msg := &schema.Message{
 		Role:                     parseRole(string(req.Role)),
 		Content:                  req.Content,
 		Name:                     req.Name,
@@ -69,6 +70,7 @@ func BuildUserMessage(req *ChatRequest) *schema.Message {
 		ReasoningContent:         req.ReasoningContent,
 		Extra:                    req.Extra,
 	}
+	return msg
 }
 
 // resolveModel returns the requested model or falls back to the default.
@@ -87,6 +89,7 @@ func (uc *ChatUsecase) Chat(
 	thinking *bool,
 ) (*schema.Message, string, error) {
 	modelName := uc.resolveModel(reqModel)
+	preparedMessages := prepareMessagesForModel(messages)
 
 	agent, err := uc.createAgent(ctx, modelName)
 	if err != nil {
@@ -97,7 +100,7 @@ func (uc *ChatUsecase) Chat(
 		Thinking: thinking,
 	})
 	iter := agent.Run(ctx, &adk.AgentInput{
-		Messages:        messages,
+		Messages:        preparedMessages,
 		EnableStreaming: false,
 	}, adk.WithChatModelOptions([]model.Option{thinkingOpts}))
 
@@ -148,6 +151,7 @@ func (uc *ChatUsecase) ChatStream(
 	onChunk StreamChunkCallback,
 ) (*schema.Message, string, error) {
 	modelName := uc.resolveModel(reqModel)
+	preparedMessages := prepareMessagesForModel(messages)
 
 	agent, err := uc.createAgent(ctx, modelName)
 	if err != nil {
@@ -158,7 +162,7 @@ func (uc *ChatUsecase) ChatStream(
 		Thinking: thinking,
 	})
 	iter := agent.Run(ctx, &adk.AgentInput{
-		Messages:        messages,
+		Messages:        preparedMessages,
 		EnableStreaming: true,
 	}, adk.WithChatModelOptions([]model.Option{thinkingOpts}))
 
@@ -186,24 +190,30 @@ func (uc *ChatUsecase) ChatStream(
 				return nil, "", err
 			}
 		} else if mv.Message != nil {
-			streamChunk := StreamChunk{
-				Content:                  mv.Message.Content,
-				ReasoningContent:         mv.Message.ReasoningContent,
-				AssistantGenMultiContent: mv.Message.AssistantGenMultiContent,
-				ToolCalls:                mv.Message.ToolCalls,
+			streamChunk := StreamChunk{}
+
+			contentDelta := computeStreamSnapshotDelta(fullContent.String(), mv.Message.Content)
+			if contentDelta != "" {
+				fullContent.WriteString(contentDelta)
+				streamChunk.Content = contentDelta
 			}
 
-			if mv.Message.ReasoningContent != "" {
-				fullReasoning.WriteString(mv.Message.ReasoningContent)
+			reasoningDelta := computeStreamSnapshotDelta(fullReasoning.String(), mv.Message.ReasoningContent)
+			if reasoningDelta != "" {
+				fullReasoning.WriteString(reasoningDelta)
+				streamChunk.ReasoningContent = reasoningDelta
 			}
-			if mv.Message.Content != "" {
-				fullContent.WriteString(mv.Message.Content)
+
+			multiContentDelta := computeMultiContentSnapshotDelta(multiContent, mv.Message.AssistantGenMultiContent)
+			if len(multiContentDelta) > 0 {
+				multiContent = append(multiContent, multiContentDelta...)
+				streamChunk.AssistantGenMultiContent = multiContentDelta
 			}
-			if len(mv.Message.AssistantGenMultiContent) > 0 {
-				multiContent = append(multiContent, mv.Message.AssistantGenMultiContent...)
-			}
-			if len(mv.Message.ToolCalls) > 0 {
-				toolCalls = mergeToolCalls(toolCalls, mv.Message.ToolCalls)
+
+			var toolCallsChanged bool
+			toolCalls, toolCallsChanged = mergeToolCallsWithChange(toolCalls, mv.Message.ToolCalls)
+			if toolCallsChanged {
+				streamChunk.ToolCalls = mv.Message.ToolCalls
 			}
 
 			if streamChunk.Content != "" || streamChunk.ReasoningContent != "" || len(streamChunk.AssistantGenMultiContent) > 0 || len(streamChunk.ToolCalls) > 0 {
@@ -222,6 +232,98 @@ func (uc *ChatUsecase) ChatStream(
 		ToolCalls:                toolCalls,
 	}
 	return assistantMsg, modelName, nil
+}
+
+func prepareMessagesForModel(messages []*schema.Message) []*schema.Message {
+	prepared := make([]*schema.Message, len(messages))
+	for i, msg := range messages {
+		if msg == nil {
+			continue
+		}
+
+		cloned := *msg
+		prepared[i] = &cloned
+
+		if len(cloned.UserInputMultiContent) == 0 {
+			continue
+		}
+
+		if cloned.Role != schema.User {
+			if cloned.Content == "" {
+				cloned.Content = concatInputTextParts(cloned.UserInputMultiContent)
+			}
+			cloned.UserInputMultiContent = nil
+			continue
+		}
+
+		if hasNonTextInputParts(cloned.UserInputMultiContent) {
+			cloned.Content = ""
+			continue
+		}
+
+		if cloned.Content == "" {
+			cloned.Content = concatInputTextParts(cloned.UserInputMultiContent)
+		}
+		cloned.UserInputMultiContent = nil
+	}
+	return prepared
+}
+
+func hasNonTextInputParts(parts []schema.MessageInputPart) bool {
+	for _, part := range parts {
+		if part.Type != schema.ChatMessagePartTypeText {
+			return true
+		}
+	}
+	return false
+}
+
+func concatInputTextParts(parts []schema.MessageInputPart) string {
+	var sb strings.Builder
+	for _, part := range parts {
+		if part.Type == schema.ChatMessagePartTypeText {
+			sb.WriteString(part.Text)
+		}
+	}
+	return sb.String()
+}
+
+func computeStreamSnapshotDelta(current, snapshot string) string {
+	if snapshot == "" {
+		return ""
+	}
+	if current == "" {
+		return snapshot
+	}
+	if strings.HasPrefix(snapshot, current) {
+		return strings.TrimPrefix(snapshot, current)
+	}
+	// 非前缀快照无法安全增量化，直接忽略避免重复输出。
+	return ""
+}
+
+func computeMultiContentSnapshotDelta(current, snapshot []schema.MessageOutputPart) []schema.MessageOutputPart {
+	if len(snapshot) == 0 {
+		return nil
+	}
+	if len(current) == 0 {
+		return append([]schema.MessageOutputPart(nil), snapshot...)
+	}
+	if len(snapshot) < len(current) {
+		return nil
+	}
+	if !reflect.DeepEqual(snapshot[:len(current)], current) {
+		return nil
+	}
+	return append([]schema.MessageOutputPart(nil), snapshot[len(current):]...)
+}
+
+func mergeToolCallsWithChange(existing, incoming []schema.ToolCall) ([]schema.ToolCall, bool) {
+	if len(incoming) == 0 {
+		return existing, false
+	}
+	merged := mergeToolCalls(existing, incoming)
+	return merged, !reflect.DeepEqual(existing, merged)
 }
 
 // consumeStream reads all frames from a MessageStream, accumulates content, and calls onChunk.
