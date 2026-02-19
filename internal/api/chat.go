@@ -1,8 +1,11 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -10,6 +13,78 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 )
+
+const (
+	maxInputBinaryParts = 4
+	maxInputBinaryBytes = 5 * 1024 * 1024
+	maxInputTotalBytes  = 10 * 1024 * 1024
+)
+
+const (
+	chatErrCodeInvalidRequestBody    = "invalid_request_body"
+	chatErrCodeInvalidContentFormat  = "invalid_content_format"
+	chatErrCodeUnsupportedPartType   = "unsupported_content_part_type"
+	chatErrCodeBinaryDataEmpty       = "binary_data_empty"
+	chatErrCodeBinaryMIMERequired    = "binary_mime_required"
+	chatErrCodeBinaryMIMEUnsupported = "binary_mime_unsupported"
+	chatErrCodeBinaryDecodeFailed    = "binary_decode_failed"
+	chatErrCodeBinaryPartTooLarge    = "binary_part_too_large"
+	chatErrCodeBinaryTotalTooLarge   = "binary_total_too_large"
+	chatErrCodeBinaryPartTooMany     = "binary_part_too_many"
+)
+
+var allowedInputImageMIMETypes = map[string]struct{}{
+	"image/png":  {},
+	"image/jpeg": {},
+	"image/webp": {},
+	"image/gif":  {},
+}
+
+type chatInputError struct {
+	code string
+	msg  string
+	err  error
+}
+
+func (e *chatInputError) Error() string {
+	if e.msg != "" {
+		return e.msg
+	}
+	if e.err != nil {
+		return e.err.Error()
+	}
+	return e.code
+}
+
+func (e *chatInputError) Unwrap() error {
+	return e.err
+}
+
+func newChatInputError(code, msg string) error {
+	return &chatInputError{
+		code: code,
+		msg:  msg,
+	}
+}
+
+func wrapChatInputError(code, msg string, err error) error {
+	return &chatInputError{
+		code: code,
+		msg:  msg,
+		err:  err,
+	}
+}
+
+func chatInputErrorCode(err error) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	var inputErr *chatInputError
+	if errors.As(err, &inputErr) && inputErr.code != "" {
+		return inputErr.code, true
+	}
+	return "", false
+}
 
 // ChatHandler 聊天接口处理器
 type ChatHandler struct {
@@ -34,13 +109,20 @@ func (h *ChatHandler) RegisterRoutes(r *mux.Router) {
 func (h *ChatHandler) chat(w http.ResponseWriter, r *http.Request) {
 	var runInput RunAgentInput
 	if err := json.NewDecoder(r.Body).Decode(&runInput); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body: " + err.Error()})
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"code":  chatErrCodeInvalidRequestBody,
+			"error": "invalid request body: " + err.Error(),
+		})
 		return
 	}
 
 	req, err := buildChatRequestFromRunInput(&runInput)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		resp := map[string]string{"error": err.Error()}
+		if code, ok := chatInputErrorCode(err); ok {
+			resp["code"] = code
+		}
+		writeJSON(w, http.StatusBadRequest, resp)
 		return
 	}
 
@@ -111,18 +193,21 @@ func buildChatRequestFromRunInput(input *RunAgentInput) (*ChatRequest, error) {
 }
 
 func parseRunAgentMessage(msg RunAgentInputMessage) (*schema.Message, error) {
-	content, err := parseRunAgentContent(msg.Content)
+	content, parts, err := parseRunAgentContent(msg.Content)
 	if err != nil {
 		return nil, err
 	}
-
-	return &schema.Message{
+	message := &schema.Message{
 		Role:       parseRunAgentRole(msg.Role),
 		Content:    content,
 		Name:       msg.Name,
 		ToolCallID: msg.ToolCallID,
 		ToolCalls:  msg.ToolCalls,
-	}, nil
+	}
+	if len(parts) > 0 {
+		message.UserInputMultiContent = parts
+	}
+	return message, nil
 }
 
 func parseRunAgentRole(role string) schema.RoleType {
@@ -138,36 +223,157 @@ func parseRunAgentRole(role string) schema.RoleType {
 	}
 }
 
-func parseRunAgentContent(raw json.RawMessage) (string, error) {
+func parseRunAgentContent(raw json.RawMessage) (string, []schema.MessageInputPart, error) {
 	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" || trimmed == "null" {
-		return "", nil
+		return "", nil, nil
 	}
 
-	// AG-UI Message.content 的文本模式（字符串）
-	var text string
-	if err := json.Unmarshal(raw, &text); err == nil {
-		return text, nil
-	}
-
-	// AG-UI Message.content 的分片模式（当前仅支持 text）
+	// AG-UI Message.content 仅支持分片模式（text + binary(image)）
 	var parts []RunAgentInputContentPart
 	if err := json.Unmarshal(raw, &parts); err == nil {
 		var sb strings.Builder
+		inputParts := make([]schema.MessageInputPart, 0, len(parts))
+		binaryParts := 0
+		totalBinaryBytes := 0
+
 		for _, part := range parts {
-			switch part.Type {
+			partType := strings.ToLower(strings.TrimSpace(part.Type))
+			switch partType {
 			case "text":
 				sb.WriteString(part.Text)
+				inputParts = append(inputParts, schema.MessageInputPart{
+					Type: schema.ChatMessagePartTypeText,
+					Text: part.Text,
+				})
 			case "binary":
-				return "", fmt.Errorf("binary content is not supported yet")
+				binaryParts++
+				if binaryParts > maxInputBinaryParts {
+					return "", nil, newChatInputError(
+						chatErrCodeBinaryPartTooMany,
+						fmt.Sprintf("too many binary parts: max %d", maxInputBinaryParts),
+					)
+				}
+
+				base64Data, mimeType, err := normalizeBinaryPart(part)
+				if err != nil {
+					return "", nil, err
+				}
+				decodedSize, tooLarge, err := decodeBase64Size(base64Data, maxInputBinaryBytes)
+				if err != nil {
+					return "", nil, wrapChatInputError(chatErrCodeBinaryDecodeFailed, "invalid binary data", err)
+				}
+				if tooLarge {
+					return "", nil, newChatInputError(
+						chatErrCodeBinaryPartTooLarge,
+						fmt.Sprintf("binary part too large: max %d bytes", maxInputBinaryBytes),
+					)
+				}
+				totalBinaryBytes += decodedSize
+				if totalBinaryBytes > maxInputTotalBytes {
+					return "", nil, newChatInputError(
+						chatErrCodeBinaryTotalTooLarge,
+						fmt.Sprintf("total binary data too large: max %d bytes", maxInputTotalBytes),
+					)
+				}
+
+				base64Value := base64Data
+				inputParts = append(inputParts, schema.MessageInputPart{
+					Type: schema.ChatMessagePartTypeImageURL,
+					Image: &schema.MessageInputImage{
+						MessagePartCommon: schema.MessagePartCommon{
+							Base64Data: &base64Value,
+							MIMEType:   mimeType,
+						},
+					},
+				})
 			default:
-				return "", fmt.Errorf("unsupported content part type: %s", part.Type)
+				return "", nil, newChatInputError(
+					chatErrCodeUnsupportedPartType,
+					fmt.Sprintf("unsupported content part type: %s", part.Type),
+				)
 			}
 		}
-		return sb.String(), nil
+		return sb.String(), inputParts, nil
 	}
 
-	return "", fmt.Errorf("unsupported message content format")
+	return "", nil, newChatInputError(chatErrCodeInvalidContentFormat, "unsupported message content format")
+}
+
+func normalizeBinaryPart(part RunAgentInputContentPart) (base64Data string, mimeType string, err error) {
+	raw := strings.TrimSpace(part.Data)
+	if raw == "" {
+		return "", "", newChatInputError(chatErrCodeBinaryDataEmpty, "binary content data is empty")
+	}
+
+	mimeType = strings.ToLower(strings.TrimSpace(part.MimeType))
+	if strings.HasPrefix(raw, "data:") {
+		prefixEnd := strings.Index(raw, ",")
+		if prefixEnd <= 0 {
+			return "", "", newChatInputError(chatErrCodeInvalidContentFormat, "invalid data url")
+		}
+		prefix := strings.ToLower(raw[:prefixEnd])
+		if !strings.Contains(prefix, ";base64") {
+			return "", "", newChatInputError(chatErrCodeInvalidContentFormat, "data url must be base64 encoded")
+		}
+		if mimeType == "" {
+			mime := strings.TrimPrefix(prefix, "data:")
+			mimeType = strings.TrimSuffix(mime, ";base64")
+		}
+		raw = raw[prefixEnd+1:]
+	}
+
+	if mimeType == "" {
+		return "", "", newChatInputError(chatErrCodeBinaryMIMERequired, "binary content mimeType is required")
+	}
+	if _, ok := allowedInputImageMIMETypes[mimeType]; !ok {
+		return "", "", newChatInputError(
+			chatErrCodeBinaryMIMEUnsupported,
+			fmt.Sprintf("unsupported image mimeType: %s", mimeType),
+		)
+	}
+
+	return raw, mimeType, nil
+}
+
+func decodeBase64Size(data string, limit int) (decodedSize int, tooLarge bool, err error) {
+	encodings := []*base64.Encoding{
+		base64.StdEncoding,
+		base64.RawStdEncoding,
+		base64.URLEncoding,
+		base64.RawURLEncoding,
+	}
+	var lastErr error
+	for _, enc := range encodings {
+		size, exceeded, decodeErr := decodeBase64SizeWithEncoding(data, enc, limit)
+		if decodeErr == nil {
+			return size, exceeded, nil
+		}
+		lastErr = decodeErr
+	}
+	return 0, false, lastErr
+}
+
+func decodeBase64SizeWithEncoding(data string, enc *base64.Encoding, limit int) (decodedSize int, tooLarge bool, err error) {
+	decoder := base64.NewDecoder(enc, strings.NewReader(data))
+	buf := make([]byte, 32*1024)
+	total := 0
+	for {
+		n, readErr := decoder.Read(buf)
+		if n > 0 {
+			total += n
+			if total > limit {
+				return total, true, nil
+			}
+		}
+		if readErr == nil {
+			continue
+		}
+		if errors.Is(readErr, io.EOF) {
+			return total, false, nil
+		}
+		return 0, false, readErr
+	}
 }
 
 func parseForwardedProps(props map[string]any) (model string, thinking *bool) {
