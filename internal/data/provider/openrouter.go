@@ -29,6 +29,20 @@ func newOpenRouter(ctx context.Context, cfg conf.Client, modelName string, opts 
 
 type openRouterAdapter struct{ raw model.ToolCallingChatModel }
 
+func (a *openRouterAdapter) GetType() string {
+	if c, ok := a.raw.(interface{ GetType() string }); ok {
+		return c.GetType()
+	}
+	return "OpenRouter"
+}
+
+func (a *openRouterAdapter) IsCallbacksEnabled() bool {
+	if c, ok := a.raw.(interface{ IsCallbacksEnabled() bool }); ok {
+		return c.IsCallbacksEnabled()
+	}
+	return true
+}
+
 func (a *openRouterAdapter) Generate(ctx context.Context, messages []*schema.Message, opts ...model.Option) (*schema.Message, error) {
 	return a.raw.Generate(ctx, messages, a.injectOpts(opts)...)
 }

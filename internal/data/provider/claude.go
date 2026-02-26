@@ -36,6 +36,20 @@ type claudeAdapter struct {
 	modelName string
 }
 
+func (a *claudeAdapter) GetType() string {
+	if c, ok := a.raw.(interface{ GetType() string }); ok {
+		return c.GetType()
+	}
+	return "Claude"
+}
+
+func (a *claudeAdapter) IsCallbacksEnabled() bool {
+	if c, ok := a.raw.(interface{ IsCallbacksEnabled() bool }); ok {
+		return c.IsCallbacksEnabled()
+	}
+	return true
+}
+
 func (a *claudeAdapter) Generate(ctx context.Context, messages []*schema.Message, opts ...model.Option) (*schema.Message, error) {
 	opts = a.injectOpts(opts)
 	resp, err := a.raw.Generate(ctx, messages, opts...)

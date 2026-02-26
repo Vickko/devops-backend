@@ -57,6 +57,20 @@ type openAIAdapter struct {
 	modelName string
 }
 
+func (a *openAIAdapter) GetType() string {
+	if c, ok := a.raw.(interface{ GetType() string }); ok {
+		return c.GetType()
+	}
+	return "OpenAI"
+}
+
+func (a *openAIAdapter) IsCallbacksEnabled() bool {
+	if c, ok := a.raw.(interface{ IsCallbacksEnabled() bool }); ok {
+		return c.IsCallbacksEnabled()
+	}
+	return true
+}
+
 func (a *openAIAdapter) Generate(ctx context.Context, messages []*schema.Message, opts ...model.Option) (*schema.Message, error) {
 	return a.raw.Generate(ctx, messages, a.injectOpts(opts)...)
 }
@@ -92,6 +106,20 @@ func (a *openAIAdapter) injectOpts(opts []model.Option) []model.Option {
 type openAIResponseAdapter struct {
 	raw       model.BaseChatModel
 	modelName string
+}
+
+func (a *openAIResponseAdapter) GetType() string {
+	if c, ok := a.raw.(interface{ GetType() string }); ok {
+		return c.GetType()
+	}
+	return "OpenAI"
+}
+
+func (a *openAIResponseAdapter) IsCallbacksEnabled() bool {
+	if c, ok := a.raw.(interface{ IsCallbacksEnabled() bool }); ok {
+		return c.IsCallbacksEnabled()
+	}
+	return true
 }
 
 func (a *openAIResponseAdapter) Generate(ctx context.Context, messages []*schema.Message, opts ...model.Option) (*schema.Message, error) {

@@ -55,6 +55,20 @@ type geminiAdapter struct {
 	modelName string
 }
 
+func (a *geminiAdapter) GetType() string {
+	if c, ok := a.raw.(interface{ GetType() string }); ok {
+		return c.GetType()
+	}
+	return "Gemini"
+}
+
+func (a *geminiAdapter) IsCallbacksEnabled() bool {
+	if c, ok := a.raw.(interface{ IsCallbacksEnabled() bool }); ok {
+		return c.IsCallbacksEnabled()
+	}
+	return true
+}
+
 func (a *geminiAdapter) Generate(ctx context.Context, messages []*schema.Message, opts ...model.Option) (*schema.Message, error) {
 	params := biz.GetParams(opts...)
 	resp, err := a.raw.Generate(ctx, messages, a.injectThinkingConfig(opts)...)

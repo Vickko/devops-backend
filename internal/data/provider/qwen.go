@@ -29,6 +29,20 @@ func newQwen(ctx context.Context, cfg conf.Client, modelName string, opts ...mod
 
 type qwenAdapter struct{ raw model.ToolCallingChatModel }
 
+func (a *qwenAdapter) GetType() string {
+	if c, ok := a.raw.(interface{ GetType() string }); ok {
+		return c.GetType()
+	}
+	return "Qwen"
+}
+
+func (a *qwenAdapter) IsCallbacksEnabled() bool {
+	if c, ok := a.raw.(interface{ IsCallbacksEnabled() bool }); ok {
+		return c.IsCallbacksEnabled()
+	}
+	return true
+}
+
 func (a *qwenAdapter) Generate(ctx context.Context, messages []*schema.Message, opts ...model.Option) (*schema.Message, error) {
 	return a.raw.Generate(ctx, messages, a.injectOpts(opts)...)
 }

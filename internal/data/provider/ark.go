@@ -30,6 +30,20 @@ func newArk(ctx context.Context, cfg conf.Client, modelName string, opts ...mode
 
 type arkAdapter struct{ raw model.ToolCallingChatModel }
 
+func (a *arkAdapter) GetType() string {
+	if c, ok := a.raw.(interface{ GetType() string }); ok {
+		return c.GetType()
+	}
+	return "Ark"
+}
+
+func (a *arkAdapter) IsCallbacksEnabled() bool {
+	if c, ok := a.raw.(interface{ IsCallbacksEnabled() bool }); ok {
+		return c.IsCallbacksEnabled()
+	}
+	return true
+}
+
 func (a *arkAdapter) Generate(ctx context.Context, messages []*schema.Message, opts ...model.Option) (*schema.Message, error) {
 	return a.raw.Generate(ctx, messages, a.injectOpts(opts)...)
 }
