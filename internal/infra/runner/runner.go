@@ -14,14 +14,14 @@ import (
 )
 
 // Runner manages Docker containers for sandboxed code execution.
+// Operations are atomic: Create a container, optionally CopyTo files,
+// Exec commands, CopyFrom artifacts, and Remove when done.
 type Runner interface {
-	// RunTask creates a container, injects files, executes cmd, and returns
-	// the container ID with stdout/stderr. The container is kept alive so the
-	// caller can extract artifacts via CopyFromContainer; call RemoveContainer
-	// when done.
-	RunTask(ctx context.Context, img string, files map[string][]byte, cmd []string) (containerID, stdout, stderr string, err error)
-	CopyFromContainer(ctx context.Context, containerID, srcPath string) (map[string][]byte, error)
-	RemoveContainer(ctx context.Context, containerID string) error
+	Create(ctx context.Context, image string) (containerID string, err error)
+	CopyTo(ctx context.Context, containerID string, files map[string][]byte) error
+	Exec(ctx context.Context, containerID string, cmd []string) (stdout, stderr string, err error)
+	CopyFrom(ctx context.Context, containerID, srcPath string) (map[string][]byte, error)
+	Remove(ctx context.Context, containerID string) error
 	Close() error
 }
 
@@ -81,18 +81,11 @@ func New(logger *slog.Logger, opts ...Option) (Runner, error) {
 	return &dockerRunner{cli: cli, cfg: cfg, logger: logger}, nil
 }
 
-func (r *dockerRunner) RunTask(ctx context.Context, img string, files map[string][]byte, cmd []string) (string, string, string, error) {
-	if r.cfg.TaskTimeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, r.cfg.TaskTimeout)
-		defer cancel()
-	}
-
+func (r *dockerRunner) Create(ctx context.Context, img string) (string, error) {
 	if err := r.pullImage(ctx, img); err != nil {
-		return "", "", "", fmt.Errorf("pull image: %w", err)
+		return "", fmt.Errorf("pull image: %w", err)
 	}
 
-	// Create container with sleep infinity to keep it alive.
 	pidsLimit := r.cfg.PidsLimit
 	resp, err := r.cli.ContainerCreate(ctx, &container.Config{
 		Image:      img,
@@ -110,40 +103,48 @@ func (r *dockerRunner) RunTask(ctx context.Context, img string, files map[string
 		SecurityOpt: r.cfg.SecurityOpt,
 	}, nil, nil, "")
 	if err != nil {
-		return "", "", "", fmt.Errorf("create container: %w", err)
-	}
-	cid := resp.ID
-
-	if err := r.cli.ContainerStart(ctx, cid, container.StartOptions{}); err != nil {
-		_ = r.cli.ContainerRemove(ctx, cid, container.RemoveOptions{Force: true})
-		return "", "", "", fmt.Errorf("start container: %w", err)
+		return "", fmt.Errorf("create container: %w", err)
 	}
 
-	// Inject files into the working directory.
-	if len(files) > 0 {
-		tarReader, err := packTar(files)
-		if err != nil {
-			return cid, "", "", fmt.Errorf("pack tar: %w", err)
-		}
-		if err := r.cli.CopyToContainer(ctx, cid, r.cfg.WorkDir, tarReader, container.CopyToContainerOptions{}); err != nil {
-			return cid, "", "", fmt.Errorf("copy to container: %w", err)
-		}
+	if err := r.cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		_ = r.cli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{Force: true})
+		return "", fmt.Errorf("start container: %w", err)
 	}
 
-	// Execute the command inside the container.
-	execResp, err := r.cli.ContainerExecCreate(ctx, cid, container.ExecOptions{
+	return resp.ID, nil
+}
+
+func (r *dockerRunner) CopyTo(ctx context.Context, containerID string, files map[string][]byte) error {
+	if len(files) == 0 {
+		return nil
+	}
+	tarReader, err := packTar(files)
+	if err != nil {
+		return fmt.Errorf("pack tar: %w", err)
+	}
+	return r.cli.CopyToContainer(ctx, containerID, r.cfg.WorkDir, tarReader, container.CopyToContainerOptions{})
+}
+
+func (r *dockerRunner) Exec(ctx context.Context, containerID string, cmd []string) (string, string, error) {
+	if r.cfg.TaskTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, r.cfg.TaskTimeout)
+		defer cancel()
+	}
+
+	execResp, err := r.cli.ContainerExecCreate(ctx, containerID, container.ExecOptions{
 		Cmd:          cmd,
 		WorkingDir:   r.cfg.WorkDir,
 		AttachStdout: true,
 		AttachStderr: true,
 	})
 	if err != nil {
-		return cid, "", "", fmt.Errorf("exec create: %w", err)
+		return "", "", fmt.Errorf("exec create: %w", err)
 	}
 
 	attachResp, err := r.cli.ContainerExecAttach(ctx, execResp.ID, container.ExecAttachOptions{})
 	if err != nil {
-		return cid, "", "", fmt.Errorf("exec attach: %w", err)
+		return "", "", fmt.Errorf("exec attach: %w", err)
 	}
 	defer attachResp.Close()
 
@@ -165,24 +166,24 @@ func (r *dockerRunner) RunTask(ctx context.Context, img string, files map[string
 	close(execDone)
 
 	if copyErr != nil && ctx.Err() != nil {
-		return cid, outW.String(), errW.String(), fmt.Errorf("exec timed out: %w", ctx.Err())
+		return outW.String(), errW.String(), fmt.Errorf("exec timed out: %w", ctx.Err())
 	}
 	if copyErr != nil {
-		return cid, "", "", fmt.Errorf("read exec output: %w", copyErr)
+		return "", "", fmt.Errorf("read exec output: %w", copyErr)
 	}
 
 	inspect, err := r.cli.ContainerExecInspect(ctx, execResp.ID)
 	if err != nil {
-		return cid, outW.String(), errW.String(), fmt.Errorf("exec inspect: %w", err)
+		return outW.String(), errW.String(), fmt.Errorf("exec inspect: %w", err)
 	}
 	if inspect.ExitCode != 0 {
-		return cid, outW.String(), errW.String(), &ExecError{
+		return outW.String(), errW.String(), &ExecError{
 			ExitCode: inspect.ExitCode,
 			Stderr:   errW.String(),
 		}
 	}
 
-	return cid, outW.String(), errW.String(), nil
+	return outW.String(), errW.String(), nil
 }
 
 func (r *dockerRunner) pullImage(ctx context.Context, img string) error {
@@ -206,7 +207,7 @@ func (r *dockerRunner) pullImage(ctx context.Context, img string) error {
 	return nil
 }
 
-func (r *dockerRunner) CopyFromContainer(ctx context.Context, containerID, srcPath string) (map[string][]byte, error) {
+func (r *dockerRunner) CopyFrom(ctx context.Context, containerID, srcPath string) (map[string][]byte, error) {
 	rc, _, err := r.cli.CopyFromContainer(ctx, containerID, srcPath)
 	if err != nil {
 		return nil, fmt.Errorf("copy from container: %w", err)
@@ -215,7 +216,7 @@ func (r *dockerRunner) CopyFromContainer(ctx context.Context, containerID, srcPa
 	return unpackTar(rc, r.cfg.MemoryLimit)
 }
 
-func (r *dockerRunner) RemoveContainer(ctx context.Context, containerID string) error {
+func (r *dockerRunner) Remove(ctx context.Context, containerID string) error {
 	return r.cli.ContainerRemove(ctx, containerID, container.RemoveOptions{
 		Force:         true,
 		RemoveVolumes: true,
