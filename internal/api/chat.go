@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"strings"
 
-	"devops-backend/internal/data/provider"
+	"devops-backend/internal/infra/data/provider"
 
 	"github.com/cloudwego/eino/schema"
 	"github.com/google/uuid"

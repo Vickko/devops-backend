@@ -13,8 +13,8 @@ import (
 	"devops-backend/internal/auth"
 	"devops-backend/internal/biz"
 	"devops-backend/internal/conf"
-	"devops-backend/internal/data"
-	"devops-backend/internal/data/provider"
+	"devops-backend/internal/infra/data"
+	"devops-backend/internal/infra/data/provider"
 	"devops-backend/internal/server"
 	"devops-backend/internal/service"
 )
